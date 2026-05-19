@@ -158,7 +158,21 @@ jobs:
             fi
             cat > "$target" <<EOF
           #!/usr/bin/env bash
-          exec /usr/local/bin/sccache "$real" "\$@"
+          set -euo pipefail
+          expanded=()
+          for arg in "\$@"; do
+            if [[ "\$arg" == @* && -f "\${arg:1}" ]]; then
+              mapfile -t rsp_args < <(python3 - "\${arg:1}" <<'PY'
+          import shlex, sys
+          print('\n'.join(shlex.split(open(sys.argv[1], encoding='utf-8', errors='ignore').read())))
+          PY
+          )
+              expanded+=("\${rsp_args[@]}")
+            else
+              expanded+=("\$arg")
+            fi
+          done
+          exec /usr/local/bin/sccache "$real" "\${expanded[@]}"
           EOF
             chmod +x "$target"
           done
