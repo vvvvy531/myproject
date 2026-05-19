@@ -24,7 +24,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     container:
-      image: wukakuki/unreal-engine:dev-slim-5.7.4
+      image: ghcr.io/epicgames/unreal-engine:dev-5.7.4
+      credentials:
+        username: ${{ secrets.GHCR_USERNAME }}
+        password: ${{ secrets.GHCR_TOKEN }}
       options: --user root
 
     steps:
@@ -100,8 +103,7 @@ jobs:
           game_content = Path('Plugins/GameContentFeature/Source/GameContentFeature/GameContentFeature.Build.cs')
           text = game_content.read_text(encoding='utf-8')
           block = "\n        PrivateIncludePathModuleNames.AddRange(new string[]\n        {\n            \"AIFeature\"\n        });\n"
-          text = text.replace(block, "\n")
-          game_content.write_text(text, encoding='utf-8')
+          game_content.write_text(text.replace(block, "\n"), encoding='utf-8')
 
           for p in Path('Plugins').glob('**/*.uplugin'):
               pdata = json.loads(p.read_text(encoding='utf-8'))
@@ -116,18 +118,13 @@ jobs:
               if changed:
                   p.write_text(json.dumps(pdata, indent='\t', ensure_ascii=False) + '\n', encoding='utf-8')
                   print(f'patched {p}')
-          python3 - <<'PY'
-          from pathlib import Path
 
-          # Linux clang rejects UTF-16 source files. Convert only CI checkout copies.
-          for p in [Path('Source/MyProject/MyProject.cpp')]:
-              raw = p.read_bytes()
-              if raw.startswith(b'\xff\xfe') or raw.startswith(b'\xfe\xff'):
-                  text = raw.decode('utf-16')
-                  p.write_text(text, encoding='utf-8', newline='')
-                  print(f'converted UTF-16 to UTF-8: {p}')
+          p = Path('Source/MyProject/MyProject.cpp')
+          raw = p.read_bytes()
+          if raw.startswith(b'\xff\xfe') or raw.startswith(b'\xfe\xff'):
+              p.write_text(raw.decode('utf-16'), encoding='utf-8', newline='')
+              print(f'converted UTF-16 to UTF-8: {p}')
 
-          # UE 5.7 Linux clang treats old entt literal operator spelling as Werror.
           for p in Path('Plugins/MapGenFeature/Source/ThirdParty/entt/include').glob('**/*.hpp'):
               text = p.read_text(encoding='utf-8', errors='ignore')
               new = text.replace('operator"" _hs', 'operator""_hs').replace('operator"" _hws', 'operator""_hws')
@@ -135,7 +132,6 @@ jobs:
                   p.write_text(new, encoding='utf-8')
                   print(f'patched entt literal operators: {p}')
 
-          # Linux paths are case-sensitive.
           for p in Path('Plugins').glob('**/*.[ch]pp'):
               text = p.read_text(encoding='utf-8', errors='ignore')
               new = text.replace('"Misc/CRC.h"', '"Misc/Crc.h"')
@@ -143,7 +139,6 @@ jobs:
                   p.write_text(new, encoding='utf-8')
                   print(f'patched include case: {p}')
 
-          # TimeManagementFeature uses typeid in templates; enable RTTI for Linux smoke only.
           p = Path('Plugins/TimeManagementFeature/Source/TimeManagementFeature/TimeManagementFeature.Build.cs')
           text = p.read_text(encoding='utf-8')
           if 'bUseRTTI = true;' not in text:
@@ -151,6 +146,7 @@ jobs:
               p.write_text(text, encoding='utf-8')
               print(f'enabled RTTI: {p}')
           PY
+
       - name: Build Linux Development target
         id: build
         shell: bash
@@ -211,4 +207,3 @@ jobs:
         if: ${{ steps.build.outputs.exit_code != '0' }}
         shell: bash
         run: exit 1
-
