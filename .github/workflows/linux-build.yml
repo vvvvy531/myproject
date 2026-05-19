@@ -1,0 +1,102 @@
+﻿name: Private Source Linux Build
+
+on:
+  workflow_dispatch:
+  repository_dispatch:
+    types: [linux-build]
+
+concurrency:
+  group: linux-build-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  SOURCE_REPO: vvvvy531/myproject-source
+  ARTIFACT_REPO: vvvvy531/myproject-linux-builds
+  PROJECT_FILE: MyProject.uproject
+  TARGET_NAME: MyProject
+
+jobs:
+  build-linux:
+    name: UE 5.7.4 Linux smoke build
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    container:
+      image: wukakuki/unreal-engine:dev-slim-5.7.4
+      options: --user root
+
+    steps:
+      - name: Checkout private source
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.SOURCE_REPO }}
+          token: ${{ secrets.SOURCE_REPO_TOKEN }}
+          path: source
+          lfs: false
+          submodules: recursive
+
+      - name: Locate Unreal Engine
+        shell: bash
+        run: |
+          set -euo pipefail
+          candidates=("/home/ue4/UnrealEngine" "/home/ue/UnrealEngine" "/opt/unreal-engine" "/opt/UnrealEngine" "/UnrealEngine" "/ue")
+          for dir in "${candidates[@]}"; do
+            if [[ -x "$dir/Engine/Build/BatchFiles/Build.sh" ]]; then
+              echo "UE_ENGINE_DIR=$dir" >> "$GITHUB_ENV"
+              exit 0
+            fi
+          done
+          found="$(find / -path '*/Engine/Build/BatchFiles/Build.sh' -type f 2>/dev/null | head -n 1 || true)"
+          [[ -n "$found" ]] || { echo "Build.sh not found" >&2; exit 1; }
+          echo "UE_ENGINE_DIR=${found%/Engine/Build/BatchFiles/Build.sh}" >> "$GITHUB_ENV"
+
+      - name: Build Linux Development target
+        shell: bash
+        working-directory: source
+        run: |
+          set -euo pipefail
+          "$UE_ENGINE_DIR/Engine/Build/BatchFiles/Build.sh" \
+            "$TARGET_NAME" Linux Development \
+            "$PWD/$PROJECT_FILE" \
+            -WaitMutex -NoHotReload -NoUBA -MaxParallelActions=2
+
+      - name: Package Linux build outputs
+        if: always()
+        shell: bash
+        working-directory: source
+        run: |
+          set -euo pipefail
+          mkdir -p ../dist
+          cat > ../dist/manifest.json <<EOF
+          {
+            "sourceRepo": "$SOURCE_REPO",
+            "sourceSha": "${GITHUB_SHA}",
+            "runId": "${GITHUB_RUN_ID}",
+            "runNumber": "${GITHUB_RUN_NUMBER}",
+            "target": "$TARGET_NAME",
+            "platform": "Linux",
+            "configuration": "Development"
+          }
+          EOF
+          tar -czf "../dist/MyProject-Linux-${GITHUB_RUN_NUMBER}.tar.gz" \
+            Binaries/Linux Saved/Logs Intermediate/Build/Linux 2>/dev/null || \
+          tar -czf "../dist/MyProject-Linux-${GITHUB_RUN_NUMBER}.tar.gz" \
+            Binaries Saved Intermediate/Build 2>/dev/null || true
+
+      - name: Publish private release
+        if: always()
+        uses: softprops/action-gh-release@v2
+        with:
+          repository: ${{ env.ARTIFACT_REPO }}
+          token: ${{ secrets.ARTIFACT_REPO_TOKEN }}
+          tag_name: linux-${{ github.run_number }}
+          name: Linux build ${{ github.run_number }}
+          body: |
+            Source: `${{ env.SOURCE_REPO }}`
+            Run: `${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}`
+          files: |
+            dist/*.tar.gz
+            dist/manifest.json
+          fail_on_unmatched_files: false
