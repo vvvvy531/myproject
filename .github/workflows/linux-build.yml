@@ -113,10 +113,8 @@ jobs:
           mkdir -p /tmp/sccache
           export SCCACHE_DIR=/tmp/sccache
           export SCCACHE_CACHE_SIZE=10G
-          export UE_SCCACHE_EXECUTABLE=/usr/local/bin/sccache
           echo "SCCACHE_DIR=$SCCACHE_DIR" >> "$GITHUB_ENV"
           echo "SCCACHE_CACHE_SIZE=$SCCACHE_CACHE_SIZE" >> "$GITHUB_ENV"
-          echo "UE_SCCACHE_EXECUTABLE=$UE_SCCACHE_EXECUTABLE" >> "$GITHUB_ENV"
           sccache --stop-server || true
           sccache --start-server || true
           sccache --show-stats || true
