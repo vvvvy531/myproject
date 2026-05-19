@@ -84,9 +84,23 @@ jobs:
           p.write_text(json.dumps(data, indent='\t', ensure_ascii=False) + '\n', encoding='utf-8')
           PY
           grep -n "AIFeature" MyProject.uproject
-          if [[ -f Plugins/AIFeature/AIFeature.uplugin ]]; then
-            mv Plugins/AIFeature/AIFeature.uplugin Plugins/AIFeature/AIFeature.uplugin.disabled
-          fi
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          for p in Path("Plugins").glob("**/*.uplugin"):
+              data = json.loads(p.read_text(encoding="utf-8"))
+              changed = False
+              if p.name == "AIFeature.uplugin":
+                  data["SupportedTargetPlatforms"] = ["Win64"]
+                  changed = True
+              for dep in data.get("Plugins", []):
+                  if dep.get("Name") == "AIFeature":
+                      dep["Enabled"] = False
+                      changed = True
+              if changed:
+                  p.write_text(json.dumps(data, indent="\t", ensure_ascii=False) + "\n", encoding="utf-8")
+                  print(f"patched {p}")
+          PY
       - name: Build Linux Development target
         shell: bash
         working-directory: source
@@ -134,5 +148,6 @@ jobs:
             dist/*.tar.gz
             dist/manifest.json
           fail_on_unmatched_files: true
+
 
 
