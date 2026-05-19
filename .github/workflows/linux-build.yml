@@ -54,6 +54,7 @@ jobs:
             /home/ue4/.config/Epic/UnrealEngine/Common/DerivedDataCache
             /home/ue4/.config/Epic/UnrealEngine/5.7/DerivedDataCache
             /home/ue4/.config/Epic/UnrealEngine/5.7.4/DerivedDataCache
+            /tmp/sccache
           key: ue-linux-main
           restore-keys: |
             ue-linux-
@@ -79,6 +80,38 @@ jobs:
             echo "No private zstd cache fallback found"
           fi
 
+
+      - name: Configure UBT unity/adaptive and sccache
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "/home/ue4/.config/Unreal Engine/UnrealBuildTool"
+          mkdir -p "/home/ue4/.config/Epic/UnrealBuildTool"
+          cat > /tmp/BuildConfiguration.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <Configuration xmlns="https://www.unrealengine.com/BuildConfiguration">
+            <BuildConfiguration>
+              <bUseUnityBuild>true</bUseUnityBuild>
+              <bUseAdaptiveUnityBuild>true</bUseAdaptiveUnityBuild>
+              <bAdaptiveUnityDisablesOptimizations>true</bAdaptiveUnityDisablesOptimizations>
+              <bAdaptiveUnityDisablesPCH>true</bAdaptiveUnityDisablesPCH>
+            </BuildConfiguration>
+          </Configuration>
+          EOF
+          cp /tmp/BuildConfiguration.xml "/home/ue4/.config/Unreal Engine/UnrealBuildTool/BuildConfiguration.xml"
+          cp /tmp/BuildConfiguration.xml "/home/ue4/.config/Epic/UnrealBuildTool/BuildConfiguration.xml"
+
+          if ! command -v sccache >/dev/null 2>&1; then
+            curl -L https://github.com/mozilla/sccache/releases/download/v0.10.0/sccache-v0.10.0-x86_64-unknown-linux-musl.tar.gz -o /tmp/sccache.tar.gz
+            tar -xzf /tmp/sccache.tar.gz -C /tmp
+            install /tmp/sccache-v0.10.0-x86_64-unknown-linux-musl/sccache /usr/local/bin/sccache
+          fi
+          mkdir -p /tmp/sccache
+          echo "SCCACHE_DIR=/tmp/sccache" >> "$GITHUB_ENV"
+          echo "SCCACHE_CACHE_SIZE=10G" >> "$GITHUB_ENV"
+          echo "UE_SCCACHE_EXECUTABLE=/usr/local/bin/sccache" >> "$GITHUB_ENV"
+          sccache --start-server || true
+          sccache --show-stats || true
       - name: Locate Unreal Engine
         shell: bash
         run: |
@@ -178,6 +211,7 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p ../dist
+          sccache --zero-stats || true
           "$UE_BUILD_SH" \
             "$TARGET_NAME" Linux Development \
             "$PWD/$PROJECT_FILE" \
@@ -193,6 +227,7 @@ jobs:
         working-directory: source
         run: |
           set -euo pipefail
+          sccache --zero-stats || true
           "$UE_BUILD_SH" \
             "${TARGET_NAME}Editor" Linux Development \
             "$PWD/$PROJECT_FILE" \
@@ -246,7 +281,7 @@ jobs:
           set -euo pipefail
           mkdir -p ../dist
           tar --use-compress-program="zstd -T0 -3" -cf ../dist/ue-linux-main-cache.tar.zst \
-            Binaries Intermediate DerivedDataCache Saved/UnrealBuildTool Plugins/*/Binaries Plugins/*/Intermediate /home/ue4/.config/Epic/UnrealEngine/Common/DerivedDataCache /home/ue4/.config/Epic/UnrealEngine/5.7/DerivedDataCache /home/ue4/.config/Epic/UnrealEngine/5.7.4/DerivedDataCache 2>/dev/null || true
+            Binaries Intermediate DerivedDataCache Saved/UnrealBuildTool Plugins/*/Binaries Plugins/*/Intermediate /home/ue4/.config/Epic/UnrealEngine/Common/DerivedDataCache /home/ue4/.config/Epic/UnrealEngine/5.7/DerivedDataCache /home/ue4/.config/Epic/UnrealEngine/5.7.4/DerivedDataCache /tmp/sccache 2>/dev/null || true
 
       - name: Publish private zstd cache fallback
         if: always()
@@ -285,6 +320,7 @@ jobs:
         if: ${{ steps.build.outputs.exit_code != '0' }}
         shell: bash
         run: exit 1
+
 
 
 
