@@ -48,6 +48,8 @@ jobs:
               exit 0
             fi
           done
+          echo "=== root dirs ==="; ls -la / || true
+          echo "=== likely ue dirs ==="; find / -maxdepth 4 \( -iname '*Unreal*' -o -iname '*UE*' -o -iname 'Build.sh' \) 2>/dev/null | head -n 200 || true
           found="$(find / -path '*/Engine/Build/BatchFiles/Build.sh' -type f 2>/dev/null | head -n 1 || true)"
           [[ -n "$found" ]] || { echo "Build.sh not found" >&2; exit 1; }
           echo "UE_ENGINE_DIR=${found%/Engine/Build/BatchFiles/Build.sh}" >> "$GITHUB_ENV"
@@ -86,7 +88,7 @@ jobs:
             Binaries Saved Intermediate/Build 2>/dev/null || true
 
       - name: Publish private release
-        if: always()
+        if: success()
         uses: softprops/action-gh-release@v2
         with:
           repository: ${{ env.ARTIFACT_REPO }}
@@ -100,3 +102,4 @@ jobs:
             dist/*.tar.gz
             dist/manifest.json
           fail_on_unmatched_files: false
+
