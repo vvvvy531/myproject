@@ -85,6 +85,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          if ! command -v zstd >/dev/null 2>&1; then
+            apt-get update
+            apt-get install -y zstd
+          fi
           mkdir -p "/home/ue4/.config/Unreal Engine/UnrealBuildTool"
           mkdir -p "/home/ue4/.config/Epic/UnrealBuildTool"
           cat > /tmp/BuildConfiguration.xml <<'EOF'
@@ -320,6 +324,7 @@ jobs:
         if: ${{ steps.build.outputs.exit_code != '0' }}
         shell: bash
         run: exit 1
+
 
 
 
