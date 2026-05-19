@@ -43,29 +43,37 @@ jobs:
           set -euo pipefail
           candidates=("/home/ue4/UnrealEngine" "/home/ue/UnrealEngine" "/opt/unreal-engine" "/opt/UnrealEngine" "/UnrealEngine" "/ue")
           for dir in "${candidates[@]}"; do
-            if [[ -x "$dir/Engine/Build/BatchFiles/Build.sh" ]]; then
-              echo "UE_ENGINE_DIR=$dir" >> "$GITHUB_ENV"
-              exit 0
-            fi
+            for build_sh in "$dir/Engine/Build/BatchFiles/Linux/Build.sh" "$dir/Engine/Build/BatchFiles/Build.sh"; do
+              if [[ -x "$build_sh" ]]; then
+                echo "UE_ENGINE_DIR=$dir" >> "$GITHUB_ENV"
+                echo "UE_BUILD_SH=$build_sh" >> "$GITHUB_ENV"
+                exit 0
+              fi
+            done
           done
           echo "=== root dirs ==="; ls -la / || true
-          echo "=== likely ue dirs ==="; find / -maxdepth 4 \( -iname '*Unreal*' -o -iname '*UE*' -o -iname 'Build.sh' \) 2>/dev/null | head -n 200 || true
-          found="$(find / -path '*/Engine/Build/BatchFiles/Build.sh' -type f 2>/dev/null | head -n 1 || true)"
+          echo "=== /home/ue4/UnrealEngine ==="; find /home/ue4/UnrealEngine -maxdepth 4 -type f 2>/dev/null | head -n 200 || true
+          found="$(find / \( -path '*/Engine/Build/BatchFiles/Linux/Build.sh' -o -path '*/Engine/Build/BatchFiles/Build.sh' \) -type f 2>/dev/null | head -n 1 || true)"
           [[ -n "$found" ]] || { echo "Build.sh not found" >&2; exit 1; }
-          echo "UE_ENGINE_DIR=${found%/Engine/Build/BatchFiles/Build.sh}" >> "$GITHUB_ENV"
+          if [[ "$found" == */Engine/Build/BatchFiles/Linux/Build.sh ]]; then
+            echo "UE_ENGINE_DIR=${found%/Engine/Build/BatchFiles/Linux/Build.sh}" >> "$GITHUB_ENV"
+          else
+            echo "UE_ENGINE_DIR=${found%/Engine/Build/BatchFiles/Build.sh}" >> "$GITHUB_ENV"
+          fi
+          echo "UE_BUILD_SH=$found" >> "$GITHUB_ENV"
 
       - name: Build Linux Development target
         shell: bash
         working-directory: source
         run: |
           set -euo pipefail
-          "$UE_ENGINE_DIR/Engine/Build/BatchFiles/Build.sh" \
+          "$UE_BUILD_SH" \
             "$TARGET_NAME" Linux Development \
             "$PWD/$PROJECT_FILE" \
             -WaitMutex -NoHotReload -NoUBA -MaxParallelActions=2
 
       - name: Package Linux build outputs
-        if: always()
+        if: success()
         shell: bash
         working-directory: source
         run: |
@@ -74,7 +82,6 @@ jobs:
           cat > ../dist/manifest.json <<EOF
           {
             "sourceRepo": "$SOURCE_REPO",
-            "sourceSha": "${GITHUB_SHA}",
             "runId": "${GITHUB_RUN_ID}",
             "runNumber": "${GITHUB_RUN_NUMBER}",
             "target": "$TARGET_NAME",
@@ -85,7 +92,7 @@ jobs:
           tar -czf "../dist/MyProject-Linux-${GITHUB_RUN_NUMBER}.tar.gz" \
             Binaries/Linux Saved/Logs Intermediate/Build/Linux 2>/dev/null || \
           tar -czf "../dist/MyProject-Linux-${GITHUB_RUN_NUMBER}.tar.gz" \
-            Binaries Saved Intermediate/Build 2>/dev/null || true
+            Binaries Saved Intermediate/Build 2>/dev/null
 
       - name: Publish private release
         if: success()
@@ -101,5 +108,4 @@ jobs:
           files: |
             dist/*.tar.gz
             dist/manifest.json
-          fail_on_unmatched_files: false
-
+          fail_on_unmatched_files: true
