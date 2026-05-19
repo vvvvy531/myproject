@@ -183,6 +183,33 @@ jobs:
           echo "exit_code=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
           exit 0
 
+
+      - name: Build Editor target for benchmark
+        if: ${{ inputs.run_benchmark == true }}
+        shell: bash
+        working-directory: source
+        run: |
+          set -euo pipefail
+          "$UE_BUILD_SH" \
+            "${TARGET_NAME}Editor" Linux Development \
+            "$PWD/$PROJECT_FILE" \
+            -WaitMutex -NoHotReload -NoUBA -MaxParallelActions=2
+
+      - name: Run benchmark commandlet
+        if: ${{ inputs.run_benchmark == true }}
+        shell: bash
+        working-directory: source
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          editor="$(find "$UE_ENGINE_DIR/Engine/Binaries/Linux" -maxdepth 1 -type f \( -name 'UnrealEditor-Cmd' -o -name 'UnrealEditor' \) | head -n 1)"
+          if [[ -z "$editor" ]]; then
+            echo "UnrealEditor-Cmd not found" | tee ../dist/benchmark.log
+            exit 0
+          fi
+          "$editor" "$PWD/$PROJECT_FILE" -run=Benchmark -unattended -nullrhi -nop4 2>&1 | tee ../dist/benchmark.log
+          mkdir -p ../dist/benchmarks
+          cp -r Saved/Benchmarks/* ../dist/benchmarks/ 2>/dev/null || true
       - name: Package build outputs and logs
         if: always()
         shell: bash
@@ -255,4 +282,5 @@ jobs:
         if: ${{ steps.build.outputs.exit_code != '0' }}
         shell: bash
         run: exit 1
+
 
