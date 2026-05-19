@@ -144,58 +144,6 @@ jobs:
           fi
           echo "UE_BUILD_SH=$found" >> "$GITHUB_ENV"
 
-      - name: Wrap UE clang with sccache
-        shell: bash
-        run: |
-          set -euo pipefail
-          toolchain_bin="$(find "$UE_ENGINE_DIR/Engine/Extras/ThirdPartyNotUE/SDKs/HostLinux" -path '*/bin/clang++' -type f | sort -V | tail -n 1 | xargs dirname)"
-          [[ -n "$toolchain_bin" ]] || { echo "UE clang toolchain not found" >&2; exit 1; }
-          for compiler in clang clang++; do
-            real="$toolchain_bin/${compiler}.real"
-            target="$toolchain_bin/$compiler"
-            if [[ ! -f "$real" ]]; then
-              mv "$target" "$real"
-            fi
-            cat > "$target" <<EOF
-          #!/usr/bin/env bash
-          set -euo pipefail
-          log=/tmp/sccache-wrapper.log
-          fail_log=/tmp/sccache-wrapper-failures.log
-          expanded=()
-          for arg in "\$@"; do
-            if [[ "\$arg" == @* && -f "\${arg:1}" ]]; then
-              echo "expand \${arg:1}" >> "\$log"
-              mapfile -t rsp_args < <(python3 - "\${arg:1}" <<'PY'
-          import shlex, sys
-          print('\n'.join(shlex.split(open(sys.argv[1], encoding='utf-8', errors='ignore').read())))
-          PY
-          )
-              expanded+=("\${rsp_args[@]}")
-            else
-              expanded+=("\$arg")
-            fi
-          done
-          printf 'compiler=%s argc=%s\n' "$real" "\${#expanded[@]}" >> "\$log"
-          set +e
-          /usr/local/bin/sccache "$real" "\${expanded[@]}"
-          code=\$?
-          set -e
-          if [[ \$code -ne 0 ]]; then
-            {
-              printf 'FAILED compiler=%s exit=%s\n' "$real" "\$code"
-              printf 'original:'
-              printf ' %q' "\$@"
-              printf '\nexpanded:'
-              printf ' %q' "\${expanded[@]}"
-              printf '\n\n'
-            } >> "\$fail_log"
-          fi
-          exit "\$code"
-          EOF
-            chmod +x "$target"
-          done
-          echo "Wrapped clang toolchain: $toolchain_bin"
-
       - name: Patch source for Linux smoke
         shell: bash
         working-directory: source
