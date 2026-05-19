@@ -84,6 +84,9 @@ jobs:
           p.write_text(json.dumps(data, indent='\t', ensure_ascii=False) + '\n', encoding='utf-8')
           PY
           grep -n "AIFeature" MyProject.uproject
+          if [[ -f Plugins/AIFeature/AIFeature.uplugin ]]; then
+            mv Plugins/AIFeature/AIFeature.uplugin Plugins/AIFeature/AIFeature.uplugin.disabled
+          fi
       - name: Build Linux Development target
         shell: bash
         working-directory: source
@@ -131,4 +134,5 @@ jobs:
             dist/*.tar.gz
             dist/manifest.json
           fail_on_unmatched_files: true
+
 
