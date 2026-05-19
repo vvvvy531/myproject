@@ -37,6 +37,22 @@ jobs:
           lfs: false
           submodules: recursive
 
+      - name: Restore incremental build cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            source/Binaries
+            source/Intermediate
+            source/DerivedDataCache
+            source/Saved/UnrealBuildTool
+            source/Plugins/**/Binaries
+            source/Plugins/**/Intermediate
+            /tmp/UnrealBuildTool
+          key: ue57-linux-${{ hashFiles('source/MyProject.uproject', 'source/Source/**/*.Build.cs', 'source/Source/**/*.Target.cs', 'source/Plugins/**/*.uplugin', 'source/Plugins/**/*.Build.cs') }}-${{ github.run_number }}
+          restore-keys: |
+            ue57-linux-${{ hashFiles('source/MyProject.uproject', 'source/Source/**/*.Build.cs', 'source/Source/**/*.Target.cs', 'source/Plugins/**/*.uplugin', 'source/Plugins/**/*.Build.cs') }}-
+            ue57-linux-
+
       - name: Locate Unreal Engine
         shell: bash
         run: |
@@ -51,8 +67,6 @@ jobs:
               fi
             done
           done
-          echo "=== root dirs ==="; ls -la / || true
-          echo "=== /home/ue4/UnrealEngine ==="; find /home/ue4/UnrealEngine -maxdepth 4 -type f 2>/dev/null | head -n 200 || true
           found="$(find / \( -path '*/Engine/Build/BatchFiles/Linux/Build.sh' -o -path '*/Engine/Build/BatchFiles/Build.sh' \) -type f 2>/dev/null | head -n 1 || true)"
           [[ -n "$found" ]] || { echo "Build.sh not found" >&2; exit 1; }
           if [[ "$found" == */Engine/Build/BatchFiles/Linux/Build.sh ]]; then
@@ -62,8 +76,7 @@ jobs:
           fi
           echo "UE_BUILD_SH=$found" >> "$GITHUB_ENV"
 
-
-      - name: Disable Windows-only plugins for Linux smoke
+      - name: Patch source for Linux smoke
         shell: bash
         working-directory: source
         run: |
@@ -71,8 +84,9 @@ jobs:
           python3 - <<'PY'
           import json
           from pathlib import Path
-          p = Path('MyProject.uproject')
-          data = json.loads(p.read_text(encoding='utf-8'))
+
+          project = Path('MyProject.uproject')
+          data = json.loads(project.read_text(encoding='utf-8'))
           plugins = data.setdefault('Plugins', [])
           disabled = {'AIFeature'}
           seen = {item.get('Name') for item in plugins}
@@ -81,47 +95,47 @@ jobs:
                   item['Enabled'] = False
           for name in sorted(disabled - seen):
               plugins.append({'Name': name, 'Enabled': False})
-          p.write_text(json.dumps(data, indent='\t', ensure_ascii=False) + '\n', encoding='utf-8')
-          PY
-          grep -n "AIFeature" MyProject.uproject
-          python3 - <<'PY'
-          from pathlib import Path
-          p = Path("Plugins/GameContentFeature/Source/GameContentFeature/GameContentFeature.Build.cs")
-          text = p.read_text(encoding="utf-8")
+          project.write_text(json.dumps(data, indent='\t', ensure_ascii=False) + '\n', encoding='utf-8')
+
+          game_content = Path('Plugins/GameContentFeature/Source/GameContentFeature/GameContentFeature.Build.cs')
+          text = game_content.read_text(encoding='utf-8')
           block = "\n        PrivateIncludePathModuleNames.AddRange(new string[]\n        {\n            \"AIFeature\"\n        });\n"
           text = text.replace(block, "\n")
-          p.write_text(text, encoding="utf-8")
-          print("patched GameContentFeature.Build.cs: removed AIFeature include module")
-          PY
-          python3 - <<'PY'
-          import json
-          from pathlib import Path
-          for p in Path("Plugins").glob("**/*.uplugin"):
-              data = json.loads(p.read_text(encoding="utf-8"))
+          game_content.write_text(text, encoding='utf-8')
+
+          for p in Path('Plugins').glob('**/*.uplugin'):
+              pdata = json.loads(p.read_text(encoding='utf-8'))
               changed = False
-              if p.name == "AIFeature.uplugin":
-                  data["SupportedTargetPlatforms"] = ["Win64"]
+              if p.name == 'AIFeature.uplugin':
+                  pdata['SupportedTargetPlatforms'] = ['Win64']
                   changed = True
-              for dep in data.get("Plugins", []):
-                  if dep.get("Name") == "AIFeature":
-                      dep["Enabled"] = False
+              for dep in pdata.get('Plugins', []):
+                  if dep.get('Name') == 'AIFeature':
+                      dep['Enabled'] = False
                       changed = True
               if changed:
-                  p.write_text(json.dumps(data, indent="\t", ensure_ascii=False) + "\n", encoding="utf-8")
-                  print(f"patched {p}")
+                  p.write_text(json.dumps(pdata, indent='\t', ensure_ascii=False) + '\n', encoding='utf-8')
+                  print(f'patched {p}')
           PY
+
       - name: Build Linux Development target
+        id: build
         shell: bash
         working-directory: source
+        continue-on-error: true
         run: |
-          set -euo pipefail
+          set -o pipefail
+          mkdir -p ../dist
           "$UE_BUILD_SH" \
             "$TARGET_NAME" Linux Development \
             "$PWD/$PROJECT_FILE" \
-            -WaitMutex -NoHotReload -NoUBA -MaxParallelActions=2
+            -WaitMutex -NoHotReload -NoUBA -MaxParallelActions=2 \
+            2>&1 | tee ../dist/build.log
+          echo "exit_code=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+          exit 0
 
-      - name: Package Linux build outputs
-        if: success()
+      - name: Package build outputs and logs
+        if: always()
         shell: bash
         working-directory: source
         run: |
@@ -134,16 +148,15 @@ jobs:
             "runNumber": "${GITHUB_RUN_NUMBER}",
             "target": "$TARGET_NAME",
             "platform": "Linux",
-            "configuration": "Development"
+            "configuration": "Development",
+            "buildExitCode": "${{ steps.build.outputs.exit_code }}"
           }
           EOF
           tar -czf "../dist/MyProject-Linux-${GITHUB_RUN_NUMBER}.tar.gz" \
-            Binaries/Linux Saved/Logs Intermediate/Build/Linux 2>/dev/null || \
-          tar -czf "../dist/MyProject-Linux-${GITHUB_RUN_NUMBER}.tar.gz" \
-            Binaries Saved Intermediate/Build 2>/dev/null
+            Binaries Saved Intermediate/Build Plugins/*/Binaries Plugins/*/Intermediate 2>/dev/null || true
 
-      - name: Publish private release
-        if: success()
+      - name: Publish private release with logs
+        if: always()
         uses: softprops/action-gh-release@v2
         with:
           repository: ${{ env.ARTIFACT_REPO }}
@@ -153,13 +166,15 @@ jobs:
           body: |
             Source: `${{ env.SOURCE_REPO }}`
             Run: `${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}`
+            Build exit code: `${{ steps.build.outputs.exit_code }}`
           files: |
             dist/*.tar.gz
             dist/manifest.json
-          fail_on_unmatched_files: true
+            dist/build.log
+          fail_on_unmatched_files: false
+          draft: false
 
-
-
-
-
-
+      - name: Fail job if build failed
+        if: ${{ steps.build.outputs.exit_code != '0' }}
+        shell: bash
+        run: exit 1
