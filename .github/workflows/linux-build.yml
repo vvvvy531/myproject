@@ -51,10 +51,30 @@ jobs:
             source/Plugins/**/Binaries
             source/Plugins/**/Intermediate
             /tmp/UnrealBuildTool
-          key: ue57-linux-${{ hashFiles('source/MyProject.uproject', 'source/Source/**/*.Build.cs', 'source/Source/**/*.Target.cs', 'source/Plugins/**/*.uplugin', 'source/Plugins/**/*.Build.cs') }}-${{ github.run_number }}
+          key: ue-linux-main
           restore-keys: |
-            ue57-linux-${{ hashFiles('source/MyProject.uproject', 'source/Source/**/*.Build.cs', 'source/Source/**/*.Target.cs', 'source/Plugins/**/*.uplugin', 'source/Plugins/**/*.Build.cs') }}-
-            ue57-linux-
+            ue-linux-
+
+
+      - name: Restore private zstd cache fallback
+        shell: bash
+        working-directory: source
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          mkdir -p ../cache-download
+          api="https://api.github.com/repos/${ARTIFACT_REPO}/releases/tags/linux-cache-main"
+          asset_url="$(curl -fsSL -H "Authorization: Bearer ${{ secrets.ARTIFACT_REPO_TOKEN }}" "$api" | python3 -c 'import json,sys; data=json.load(sys.stdin); print(next((a["url"] for a in data.get("assets", []) if a.get("name") == "ue-linux-main-cache.tar.zst"), ""))' || true)"
+          if [[ -n "$asset_url" ]]; then
+            curl -fsSL \
+              -H "Authorization: Bearer ${{ secrets.ARTIFACT_REPO_TOKEN }}" \
+              -H "Accept: application/octet-stream" \
+              "$asset_url" \
+              -o ../cache-download/ue-linux-main-cache.tar.zst
+            tar --use-compress-program=unzstd -xf ../cache-download/ue-linux-main-cache.tar.zst || true
+          else
+            echo "No private zstd cache fallback found"
+          fi
 
       - name: Locate Unreal Engine
         shell: bash
@@ -183,6 +203,32 @@ jobs:
           EOF
           tar -czf "../dist/MyProject-Linux-${GITHUB_RUN_NUMBER}.tar.gz" \
             Binaries Saved Intermediate/Build Plugins/*/Binaries Plugins/*/Intermediate 2>/dev/null || true
+
+
+      - name: Create private zstd cache fallback
+        if: always()
+        shell: bash
+        working-directory: source
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          mkdir -p ../dist
+          tar --use-compress-program="zstd -T0 -3" -cf ../dist/ue-linux-main-cache.tar.zst \
+            Binaries Intermediate DerivedDataCache Saved/UnrealBuildTool Plugins/*/Binaries Plugins/*/Intermediate 2>/dev/null || true
+
+      - name: Publish private zstd cache fallback
+        if: always()
+        uses: softprops/action-gh-release@v2
+        with:
+          repository: ${{ env.ARTIFACT_REPO }}
+          token: ${{ secrets.ARTIFACT_REPO_TOKEN }}
+          tag_name: linux-cache-main
+          name: Linux cache main
+          prerelease: true
+          make_latest: false
+          files: dist/ue-linux-main-cache.tar.zst
+          fail_on_unmatched_files: false
+          overwrite_files: true
 
       - name: Publish private release with logs
         if: always()
