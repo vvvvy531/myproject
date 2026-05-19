@@ -85,10 +85,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if ! command -v zstd >/dev/null 2>&1; then
-            apt-get update
-            apt-get install -y zstd
-          fi
+          apt-get update
+          apt-get install -y zstd ispc
           mkdir -p "/home/ue4/.config/Unreal Engine/UnrealBuildTool"
           mkdir -p "/home/ue4/.config/Epic/UnrealBuildTool"
           cat > /tmp/BuildConfiguration.xml <<'EOF'
@@ -142,6 +140,15 @@ jobs:
           fi
           echo "UE_BUILD_SH=$found" >> "$GITHUB_ENV"
 
+      - name: Install ISPC toolchain path
+        shell: bash
+        run: |
+          set -euo pipefail
+          ispc_bin="$(command -v ispc || true)"
+          [[ -n "$ispc_bin" ]] || { echo "ispc not found" >&2; exit 1; }
+          mkdir -p "$UE_ENGINE_DIR/Engine/Source/ThirdParty/Intel/ISPC/bin/Linux"
+          ln -sf "$ispc_bin" "$UE_ENGINE_DIR/Engine/Source/ThirdParty/Intel/ISPC/bin/Linux/ispc"
+          "$UE_ENGINE_DIR/Engine/Source/ThirdParty/Intel/ISPC/bin/Linux/ispc" --version
       - name: Patch source for Linux smoke
         shell: bash
         working-directory: source
@@ -359,6 +366,9 @@ jobs:
         if: ${{ steps.build.outputs.exit_code != '0' }}
         shell: bash
         run: exit 1
+
+
+
 
 
 
