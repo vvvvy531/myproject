@@ -1,6 +1,6 @@
 ﻿name: Private Source Linux Build
 
-on:
+"on":
   workflow_dispatch:
   repository_dispatch:
     types: [linux-build]
@@ -161,6 +161,7 @@ jobs:
             dist/*.tar.gz
             dist/manifest.json
           fail_on_unmatched_files: true
+
 
 
 
