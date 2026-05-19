@@ -85,6 +85,19 @@ jobs:
           PY
           grep -n "AIFeature" MyProject.uproject
           python3 - <<'PY'
+          from pathlib import Path
+          p = Path("Plugins/GameContentFeature/Source/GameContentFeature/GameContentFeature.Build.cs")
+          text = p.read_text(encoding="utf-8")
+          text = text.replace('''
+        PrivateIncludePathModuleNames.AddRange(new string[]
+        {
+            "AIFeature"
+        });
+''', '\n')
+          p.write_text(text, encoding="utf-8")
+          print("patched GameContentFeature.Build.cs: removed AIFeature include module")
+          PY
+          python3 - <<'PY'
           import json
           from pathlib import Path
           for p in Path("Plugins").glob("**/*.uplugin"):
@@ -148,6 +161,7 @@ jobs:
             dist/*.tar.gz
             dist/manifest.json
           fail_on_unmatched_files: true
+
 
 
 
