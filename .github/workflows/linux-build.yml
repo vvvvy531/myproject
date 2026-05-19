@@ -51,6 +51,9 @@ jobs:
             source/Plugins/**/Binaries
             source/Plugins/**/Intermediate
             /tmp/UnrealBuildTool
+            /home/ue4/.config/Epic/UnrealEngine/Common/DerivedDataCache
+            /home/ue4/.config/Epic/UnrealEngine/5.7/DerivedDataCache
+            /home/ue4/.config/Epic/UnrealEngine/5.7.4/DerivedDataCache
           key: ue-linux-main
           restore-keys: |
             ue-linux-
@@ -243,7 +246,7 @@ jobs:
           set -euo pipefail
           mkdir -p ../dist
           tar --use-compress-program="zstd -T0 -3" -cf ../dist/ue-linux-main-cache.tar.zst \
-            Binaries Intermediate DerivedDataCache Saved/UnrealBuildTool Plugins/*/Binaries Plugins/*/Intermediate 2>/dev/null || true
+            Binaries Intermediate DerivedDataCache Saved/UnrealBuildTool Plugins/*/Binaries Plugins/*/Intermediate /home/ue4/.config/Epic/UnrealEngine/Common/DerivedDataCache /home/ue4/.config/Epic/UnrealEngine/5.7/DerivedDataCache /home/ue4/.config/Epic/UnrealEngine/5.7.4/DerivedDataCache 2>/dev/null || true
 
       - name: Publish private zstd cache fallback
         if: always()
@@ -282,5 +285,6 @@ jobs:
         if: ${{ steps.build.outputs.exit_code != '0' }}
         shell: bash
         run: exit 1
+
 
 
