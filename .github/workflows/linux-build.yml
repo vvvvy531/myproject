@@ -88,12 +88,8 @@ jobs:
           from pathlib import Path
           p = Path("Plugins/GameContentFeature/Source/GameContentFeature/GameContentFeature.Build.cs")
           text = p.read_text(encoding="utf-8")
-          text = text.replace('''
-        PrivateIncludePathModuleNames.AddRange(new string[]
-        {
-            "AIFeature"
-        });
-''', '\n')
+          block = "\n        PrivateIncludePathModuleNames.AddRange(new string[]\n        {\n            \"AIFeature\"\n        });\n"
+          text = text.replace(block, "\n")
           p.write_text(text, encoding="utf-8")
           print("patched GameContentFeature.Build.cs: removed AIFeature include module")
           PY
@@ -161,6 +157,7 @@ jobs:
             dist/*.tar.gz
             dist/manifest.json
           fail_on_unmatched_files: true
+
 
 
 
