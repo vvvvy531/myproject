@@ -190,6 +190,8 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p ../dist
+          cp /home/ue4/.config/Epic/UnrealBuildTool/Log.txt ../dist/ubt.log 2>/dev/null || true
+          cp "$UE_ENGINE_DIR/Engine/Source/Epic/UnrealBuildTool/Log.txt" ../dist/ubt-engine.log 2>/dev/null || true
           cat > ../dist/manifest.json <<EOF
           {
             "sourceRepo": "$SOURCE_REPO",
@@ -253,3 +255,4 @@ jobs:
         if: ${{ steps.build.outputs.exit_code != '0' }}
         shell: bash
         run: exit 1
+
