@@ -221,7 +221,10 @@ jobs:
             "$PWD/$PROJECT_FILE" \
             -WaitMutex -NoHotReload -NoUBA -MaxParallelActions=2 \
             2>&1 | tee ../dist/build.log
-          echo "exit_code=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+          code=${PIPESTATUS[0]}
+          if grep -q "Result: Failed" ../dist/build.log; then code=1; fi
+          sccache --show-stats | tee ../dist/sccache-stats.txt || true
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
           exit 0
 
 
@@ -324,6 +327,7 @@ jobs:
         if: ${{ steps.build.outputs.exit_code != '0' }}
         shell: bash
         run: exit 1
+
 
 
 
