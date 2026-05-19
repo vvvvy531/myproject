@@ -228,7 +228,7 @@ jobs:
           "$UE_BUILD_SH" \
             "$TARGET_NAME" Linux Development \
             "$PWD/$PROJECT_FILE" \
-            -WaitMutex -NoHotReload -NoUBA -MaxParallelActions=1 -Verbose \
+            -WaitMutex -NoHotReload -NoUBA -MaxParallelActions=1 -VeryVerbose \
             2>&1 | tee ../dist/build.log
           code=${PIPESTATUS[0]}
           set -e
@@ -280,8 +280,11 @@ jobs:
           cp "$UE_ENGINE_DIR/Engine/Source/Epic/UnrealBuildTool/Log.txt" ../dist/ubt-engine.log 2>/dev/null || true
           cp /tmp/sccache-wrapper.log ../dist/sccache-wrapper.log 2>/dev/null || true
           cp /tmp/sccache-wrapper-failures.log ../dist/sccache-wrapper-failures.log 2>/dev/null || true
+          find Intermediate -type f \( -name '*.log' -o -name '*.txt' -o -name '*.err' -o -name '*.response' -o -name '*.rsp' \) -print > ../dist/intermediate-diagnostics-files.txt 2>/dev/null || true
+          tar -czf ../dist/intermediate-diagnostics.tar.gz -T ../dist/intermediate-diagnostics-files.txt 2>/dev/null || true
 
           build_exit_code="${{ steps.build.outputs.exit_code }}"
+
           if [[ -z "$build_exit_code" && -f ../dist/build-exit-code.txt ]]; then
             build_exit_code="$(cat ../dist/build-exit-code.txt)"
           fi
@@ -347,6 +350,8 @@ jobs:
             dist/ubt-engine.log
             dist/sccache-wrapper.log
             dist/sccache-wrapper-failures.log
+            dist/intermediate-diagnostics-files.txt
+            dist/intermediate-diagnostics.tar.gz
           fail_on_unmatched_files: false
           draft: false
 
