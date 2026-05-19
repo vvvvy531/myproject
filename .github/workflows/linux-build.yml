@@ -86,7 +86,7 @@ jobs:
         run: |
           set -euo pipefail
           apt-get update
-          apt-get install -y zstd ispc
+          apt-get install -y zstd
           mkdir -p "/home/ue4/.config/Unreal Engine/UnrealBuildTool"
           mkdir -p "/home/ue4/.config/Epic/UnrealBuildTool"
           cat > /tmp/BuildConfiguration.xml <<'EOF'
@@ -144,8 +144,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          ispc_bin="$(command -v ispc || true)"
-          [[ -n "$ispc_bin" ]] || { echo "ispc not found" >&2; exit 1; }
+          ispc_version="v1.30.0"
+          curl -fsSL "https://github.com/ispc/ispc/releases/download/${ispc_version}/ispc-${ispc_version}-linux.tar.gz" -o /tmp/ispc.tar.gz
+          tar -xzf /tmp/ispc.tar.gz -C /tmp
+          ispc_bin="/tmp/ispc-${ispc_version}-linux/bin/ispc"
+          [[ -x "$ispc_bin" ]] || { echo "ispc not found at $ispc_bin" >&2; exit 1; }
           mkdir -p "$UE_ENGINE_DIR/Engine/Source/ThirdParty/Intel/ISPC/bin/Linux"
           ln -sf "$ispc_bin" "$UE_ENGINE_DIR/Engine/Source/ThirdParty/Intel/ISPC/bin/Linux/ispc"
           "$UE_ENGINE_DIR/Engine/Source/ThirdParty/Intel/ISPC/bin/Linux/ispc" --version
@@ -366,6 +369,7 @@ jobs:
         if: ${{ steps.build.outputs.exit_code != '0' }}
         shell: bash
         run: exit 1
+
 
 
 
