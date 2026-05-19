@@ -230,7 +230,7 @@ jobs:
           "$UE_BUILD_SH" \
             "$TARGET_NAME" Linux Development \
             "$PWD/$PROJECT_FILE" \
-            -WaitMutex -NoHotReload -NoUBA -MaxParallelActions=2 \
+            -WaitMutex -NoHotReload -NoUBA -MaxParallelActions=1 -Verbose \
             2>&1 | tee ../dist/build.log
           code=${PIPESTATUS[0]}
           set -e
