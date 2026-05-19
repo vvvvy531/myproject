@@ -159,9 +159,12 @@ jobs:
             cat > "$target" <<EOF
           #!/usr/bin/env bash
           set -euo pipefail
+          log=/tmp/sccache-wrapper.log
+          fail_log=/tmp/sccache-wrapper-failures.log
           expanded=()
           for arg in "\$@"; do
             if [[ "\$arg" == @* && -f "\${arg:1}" ]]; then
+              echo "expand \${arg:1}" >> "\$log"
               mapfile -t rsp_args < <(python3 - "\${arg:1}" <<'PY'
           import shlex, sys
           print('\n'.join(shlex.split(open(sys.argv[1], encoding='utf-8', errors='ignore').read())))
@@ -172,7 +175,22 @@ jobs:
               expanded+=("\$arg")
             fi
           done
-          exec /usr/local/bin/sccache "$real" "\${expanded[@]}"
+          printf 'compiler=%s argc=%s\n' "$real" "\${#expanded[@]}" >> "\$log"
+          set +e
+          /usr/local/bin/sccache "$real" "\${expanded[@]}"
+          code=\$?
+          set -e
+          if [[ \$code -ne 0 ]]; then
+            {
+              printf 'FAILED compiler=%s exit=%s\n' "$real" "\$code"
+              printf 'original:'
+              printf ' %q' "\$@"
+              printf '\nexpanded:'
+              printf ' %q' "\${expanded[@]}"
+              printf '\n\n'
+            } >> "\$fail_log"
+          fi
+          exit "\$code"
           EOF
             chmod +x "$target"
           done
@@ -309,6 +327,9 @@ jobs:
           mkdir -p ../dist
           cp /home/ue4/.config/Epic/UnrealBuildTool/Log.txt ../dist/ubt.log 2>/dev/null || true
           cp "$UE_ENGINE_DIR/Engine/Source/Epic/UnrealBuildTool/Log.txt" ../dist/ubt-engine.log 2>/dev/null || true
+          cp /tmp/sccache-wrapper.log ../dist/sccache-wrapper.log 2>/dev/null || true
+          cp /tmp/sccache-wrapper-failures.log ../dist/sccache-wrapper-failures.log 2>/dev/null || true
+
           build_exit_code="${{ steps.build.outputs.exit_code }}"
           if [[ -z "$build_exit_code" && -f ../dist/build-exit-code.txt ]]; then
             build_exit_code="$(cat ../dist/build-exit-code.txt)"
@@ -373,6 +394,8 @@ jobs:
             dist/build-exit-code.txt
             dist/ubt.log
             dist/ubt-engine.log
+            dist/sccache-wrapper.log
+            dist/sccache-wrapper-failures.log
           fail_on_unmatched_files: false
           draft: false
 
