@@ -216,13 +216,16 @@ jobs:
           set -o pipefail
           mkdir -p ../dist
           sccache --zero-stats || true
+          set +e
           "$UE_BUILD_SH" \
             "$TARGET_NAME" Linux Development \
             "$PWD/$PROJECT_FILE" \
             -WaitMutex -NoHotReload -NoUBA -MaxParallelActions=2 \
             2>&1 | tee ../dist/build.log
           code=${PIPESTATUS[0]}
+          set -e
           if grep -q "Result: Failed" ../dist/build.log; then code=1; fi
+
           sccache --show-stats > ../dist/sccache-stats.txt 2>&1 || true
           cat ../dist/sccache-stats.txt
           printf 'exit_code=%s\n' "$code" >> "$GITHUB_OUTPUT"
