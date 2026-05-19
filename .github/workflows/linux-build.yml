@@ -116,8 +116,41 @@ jobs:
               if changed:
                   p.write_text(json.dumps(pdata, indent='\t', ensure_ascii=False) + '\n', encoding='utf-8')
                   print(f'patched {p}')
-          PY
+          python3 - <<'PY'
+          from pathlib import Path
 
+          # Linux clang rejects UTF-16 source files. Convert only CI checkout copies.
+          for p in [Path('Source/MyProject/MyProject.cpp')]:
+              raw = p.read_bytes()
+              if raw.startswith(b'\xff\xfe') or raw.startswith(b'\xfe\xff'):
+                  text = raw.decode('utf-16')
+                  p.write_text(text, encoding='utf-8', newline='')
+                  print(f'converted UTF-16 to UTF-8: {p}')
+
+          # UE 5.7 Linux clang treats old entt literal operator spelling as Werror.
+          for p in Path('Plugins/MapGenFeature/Source/ThirdParty/entt/include').glob('**/*.hpp'):
+              text = p.read_text(encoding='utf-8', errors='ignore')
+              new = text.replace('operator"" _hs', 'operator""_hs').replace('operator"" _hws', 'operator""_hws')
+              if new != text:
+                  p.write_text(new, encoding='utf-8')
+                  print(f'patched entt literal operators: {p}')
+
+          # Linux paths are case-sensitive.
+          for p in Path('Plugins').glob('**/*.[ch]pp'):
+              text = p.read_text(encoding='utf-8', errors='ignore')
+              new = text.replace('"Misc/CRC.h"', '"Misc/Crc.h"')
+              if new != text:
+                  p.write_text(new, encoding='utf-8')
+                  print(f'patched include case: {p}')
+
+          # TimeManagementFeature uses typeid in templates; enable RTTI for Linux smoke only.
+          p = Path('Plugins/TimeManagementFeature/Source/TimeManagementFeature/TimeManagementFeature.Build.cs')
+          text = p.read_text(encoding='utf-8')
+          if 'bUseRTTI = true;' not in text:
+              text = text.replace('PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;', 'PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;\n\t\tbUseRTTI = true;')
+              p.write_text(text, encoding='utf-8')
+              print(f'enabled RTTI: {p}')
+          PY
       - name: Build Linux Development target
         id: build
         shell: bash
@@ -178,3 +211,4 @@ jobs:
         if: ${{ steps.build.outputs.exit_code != '0' }}
         shell: bash
         run: exit 1
+
