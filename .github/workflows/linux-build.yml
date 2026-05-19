@@ -111,11 +111,16 @@ jobs:
             install /tmp/sccache-v0.10.0-x86_64-unknown-linux-musl/sccache /usr/local/bin/sccache
           fi
           mkdir -p /tmp/sccache
-          echo "SCCACHE_DIR=/tmp/sccache" >> "$GITHUB_ENV"
-          echo "SCCACHE_CACHE_SIZE=10G" >> "$GITHUB_ENV"
-          echo "UE_SCCACHE_EXECUTABLE=/usr/local/bin/sccache" >> "$GITHUB_ENV"
+          export SCCACHE_DIR=/tmp/sccache
+          export SCCACHE_CACHE_SIZE=10G
+          export UE_SCCACHE_EXECUTABLE=/usr/local/bin/sccache
+          echo "SCCACHE_DIR=$SCCACHE_DIR" >> "$GITHUB_ENV"
+          echo "SCCACHE_CACHE_SIZE=$SCCACHE_CACHE_SIZE" >> "$GITHUB_ENV"
+          echo "UE_SCCACHE_EXECUTABLE=$UE_SCCACHE_EXECUTABLE" >> "$GITHUB_ENV"
+          sccache --stop-server || true
           sccache --start-server || true
           sccache --show-stats || true
+
       - name: Locate Unreal Engine
         shell: bash
         run: |
@@ -138,6 +143,26 @@ jobs:
             echo "UE_ENGINE_DIR=${found%/Engine/Build/BatchFiles/Build.sh}" >> "$GITHUB_ENV"
           fi
           echo "UE_BUILD_SH=$found" >> "$GITHUB_ENV"
+
+      - name: Wrap UE clang with sccache
+        shell: bash
+        run: |
+          set -euo pipefail
+          toolchain_bin="$(find "$UE_ENGINE_DIR/Engine/Extras/ThirdPartyNotUE/SDKs/HostLinux" -path '*/bin/clang++' -type f | sort -V | tail -n 1 | xargs dirname)"
+          [[ -n "$toolchain_bin" ]] || { echo "UE clang toolchain not found" >&2; exit 1; }
+          for compiler in clang clang++; do
+            real="$toolchain_bin/${compiler}.real"
+            target="$toolchain_bin/$compiler"
+            if [[ ! -f "$real" ]]; then
+              mv "$target" "$real"
+            fi
+            cat > "$target" <<EOF
+          #!/usr/bin/env bash
+          exec /usr/local/bin/sccache "$real" "\$@"
+          EOF
+            chmod +x "$target"
+          done
+          echo "Wrapped clang toolchain: $toolchain_bin"
 
       - name: Patch source for Linux smoke
         shell: bash
