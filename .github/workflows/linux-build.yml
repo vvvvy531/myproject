@@ -263,7 +263,11 @@ jobs:
               p.write_text(text, encoding='utf-8')
               print(f'enabled RTTI: {p}')
           PY
-          chmod +x Plugins/FlatBuffers/Tools/flatc/flatc.exe 2>/dev/null || true
+          if ! command -v flatc >/dev/null 2>&1; then
+            apt-get update
+            apt-get install -y flatbuffers-compiler
+          fi
+          install -m 755 "$(command -v flatc)" Plugins/FlatBuffers/Tools/flatc/flatc.exe 2>/dev/null || true
 
       - name: Build Linux Development target
         id: build
