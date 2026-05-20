@@ -130,6 +130,7 @@ jobs:
                 "    <bUseAdaptiveUnityBuild>true</bUseAdaptiveUnityBuild>" \
                 "    <bAdaptiveUnityDisablesOptimizations>true</bAdaptiveUnityDisablesOptimizations>" \
                 "    <bAdaptiveUnityDisablesPCH>true</bAdaptiveUnityDisablesPCH>" \
+                "    <bUsePCHFiles>false</bUsePCHFiles>" \
                 "  </BuildConfiguration>" \
                 "</Configuration>" > /tmp/BuildConfiguration.xml
               cp /tmp/BuildConfiguration.xml "/home/ue4/.config/Unreal Engine/UnrealBuildTool/BuildConfiguration.xml"
