@@ -25,7 +25,6 @@ jobs:
     name: UE 5.7.4 Linux smoke build
     runs-on: ubuntu-latest
     timeout-minutes: 120
-
     steps:
       - name: Free hosted runner disk
         shell: bash
@@ -94,17 +93,16 @@ jobs:
               mkdir -p Plugins/FlatBuffers/Tools/flatc Plugins/FlatBuffers/Tools/include
               install -m 755 "$(command -v flatc)" Plugins/FlatBuffers/Tools/flatc/flatc || true
               mkdir -p "/home/ue4/.config/Unreal Engine/UnrealBuildTool" "/home/ue4/.config/Epic/UnrealBuildTool"
-              cat > /tmp/BuildConfiguration.xml <<EOF
-<?xml version="1.0" encoding="utf-8"?>
-<Configuration xmlns="https://www.unrealengine.com/BuildConfiguration">
-  <BuildConfiguration>
-    <bUseUnityBuild>true</bUseUnityBuild>
-    <bUseAdaptiveUnityBuild>true</bUseAdaptiveUnityBuild>
-    <bAdaptiveUnityDisablesOptimizations>true</bAdaptiveUnityDisablesOptimizations>
-    <bAdaptiveUnityDisablesPCH>true</bAdaptiveUnityDisablesPCH>
-  </BuildConfiguration>
-</Configuration>
-EOF
+              printf "%s\n" \
+                "<?xml version=\"1.0\" encoding=\"utf-8\"?>" \
+                "<Configuration xmlns=\"https://www.unrealengine.com/BuildConfiguration\">" \
+                "  <BuildConfiguration>" \
+                "    <bUseUnityBuild>true</bUseUnityBuild>" \
+                "    <bUseAdaptiveUnityBuild>true</bUseAdaptiveUnityBuild>" \
+                "    <bAdaptiveUnityDisablesOptimizations>true</bAdaptiveUnityDisablesOptimizations>" \
+                "    <bAdaptiveUnityDisablesPCH>true</bAdaptiveUnityDisablesPCH>" \
+                "  </BuildConfiguration>" \
+                "</Configuration>" > /tmp/BuildConfiguration.xml
               cp /tmp/BuildConfiguration.xml "/home/ue4/.config/Unreal Engine/UnrealBuildTool/BuildConfiguration.xml"
               cp /tmp/BuildConfiguration.xml "/home/ue4/.config/Epic/UnrealBuildTool/BuildConfiguration.xml"
               export SCCACHE_DIR=/tmp/sccache SCCACHE_CACHE_SIZE=10G
@@ -131,18 +129,9 @@ EOF
         shell: bash
         run: |
           build_exit_code="${{ steps.build.outputs.exit_code }}"
-          [[ -n "$build_exit_code" ]] || build_exit_code="$(cat dist/build-exit-code.txt 2>/dev/null || echo 1)"`n          export BUILD_EXIT_CODE="$build_exit_code"
-          cat > dist/manifest.json <<EOF
-          {
-            "sourceRepo": "$SOURCE_REPO",
-            "runId": "${GITHUB_RUN_ID}",
-            "runNumber": "${GITHUB_RUN_NUMBER}",
-            "target": "$TARGET_NAME",
-            "platform": "Linux",
-            "configuration": "Development",
-            "buildExitCode": "$build_exit_code"
-          }
-          EOF
+          [[ -n "$build_exit_code" ]] || build_exit_code="$(cat dist/build-exit-code.txt 2>/dev/null || echo 1)"
+          python3 -c 'import json, os; json.dump({"sourceRepo": os.environ["SOURCE_REPO"], "runId": os.environ["GITHUB_RUN_ID"], "runNumber": os.environ["GITHUB_RUN_NUMBER"], "target": os.environ["TARGET_NAME"], "platform": "Linux", "configuration": "Development", "buildExitCode": os.environ["BUILD_EXIT_CODE"]}, open("dist/manifest.json", "w", encoding="utf-8"), indent=2)' \
+            BUILD_EXIT_CODE="$build_exit_code"
 
       - name: Publish private release with logs
         if: always()
@@ -173,4 +162,3 @@ EOF
         if: ${{ steps.build.outputs.exit_code != '0' }}
         shell: bash
         run: exit 1
-
