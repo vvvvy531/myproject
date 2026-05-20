@@ -91,7 +91,7 @@ jobs:
               fi
               if ! command -v flatc >/dev/null 2>&1; then apt-get update && apt-get install -y flatbuffers-compiler; fi
               mkdir -p Plugins/FlatBuffers/Tools/flatc Plugins/FlatBuffers/Tools/include
-              install -m 755 "$(command -v flatc)" Plugins/FlatBuffers/Tools/flatc/flatc || true
+              install -m 755 "$(command -v flatc)" Plugins/FlatBuffers/Tools/flatc/flatc || true`n              install -m 755 "$(command -v flatc)" Plugins/FlatBuffers/Tools/flatc/flatc.exe || true
               mkdir -p "/home/ue4/.config/Unreal Engine/UnrealBuildTool" "/home/ue4/.config/Epic/UnrealBuildTool"
               printf "%s\n" \
                 "<?xml version=\"1.0\" encoding=\"utf-8\"?>" \
@@ -130,10 +130,9 @@ jobs:
         run: |
           build_exit_code="${{ steps.build.outputs.exit_code }}"
           [[ -n "$build_exit_code" ]] || build_exit_code="$(cat dist/build-exit-code.txt 2>/dev/null || echo 1)"
-          python3 -c 'import json, os; json.dump({"sourceRepo": os.environ["SOURCE_REPO"], "runId": os.environ["GITHUB_RUN_ID"], "runNumber": os.environ["GITHUB_RUN_NUMBER"], "target": os.environ["TARGET_NAME"], "platform": "Linux", "configuration": "Development", "buildExitCode": os.environ["BUILD_EXIT_CODE"]}, open("dist/manifest.json", "w", encoding="utf-8"), indent=2)' \
-            BUILD_EXIT_CODE="$build_exit_code"
+          BUILD_EXIT_CODE="$build_exit_code" python3 -c 'import json, os; json.dump({"sourceRepo": os.environ["SOURCE_REPO"], "runId": os.environ["GITHUB_RUN_ID"], "runNumber": os.environ["GITHUB_RUN_NUMBER"], "target": os.environ["TARGET_NAME"], "platform": "Linux", "configuration": "Development", "buildExitCode": os.environ["BUILD_EXIT_CODE"]}, open("dist/manifest.json", "w", encoding="utf-8"), indent=2)'
 
-      - name: Publish private release with logs
+      - name: Drop empty artifacts`n        if: always()`n        shell: bash`n        run: find dist -type f -size 0 -delete 2>/dev/null || true`n`n      - name: Publish private release with logs
         if: always()
         uses: softprops/action-gh-release@v2
         with:
@@ -162,3 +161,4 @@ jobs:
         if: ${{ steps.build.outputs.exit_code != '0' }}
         shell: bash
         run: exit 1
+
