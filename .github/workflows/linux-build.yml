@@ -106,9 +106,9 @@ jobs:
               mkdir -p ../dist
               if ! command -v zstd >/dev/null 2>&1; then apt-get update && apt-get install -y zstd; fi
               if ! command -v sccache >/dev/null 2>&1; then
-                curl -L https://github.com/mozilla/sccache/releases/download/v0.10.0/sccache-v0.10.0-x86_64-unknown-linux-musl.tar.gz -o /tmp/sccache.tar.gz
+                curl -L https://github.com/mozilla/sccache/releases/download/v0.15.0/sccache-v0.15.0-x86_64-unknown-linux-musl.tar.gz -o /tmp/sccache.tar.gz
                 tar -xzf /tmp/sccache.tar.gz -C /tmp
-                install /tmp/sccache-v0.10.0-x86_64-unknown-linux-musl/sccache /usr/local/bin/sccache
+                install /tmp/sccache-v0.15.0-x86_64-unknown-linux-musl/sccache /usr/local/bin/sccache
               fi
               if [[ ! -x /home/ue4/UnrealEngine/Engine/Source/ThirdParty/Intel/ISPC/bin/Linux/ispc ]]; then
                 ispc_version="v1.30.0"
@@ -130,7 +130,6 @@ jobs:
                 "    <bUseAdaptiveUnityBuild>true</bUseAdaptiveUnityBuild>" \
                 "    <bAdaptiveUnityDisablesOptimizations>true</bAdaptiveUnityDisablesOptimizations>" \
                 "    <bAdaptiveUnityDisablesPCH>true</bAdaptiveUnityDisablesPCH>" \
-                "    <bUsePCHFiles>false</bUsePCHFiles>" \
                 "  </BuildConfiguration>" \
                 "</Configuration>" > /tmp/BuildConfiguration.xml
               cp /tmp/BuildConfiguration.xml "/home/ue4/.config/Unreal Engine/UnrealBuildTool/BuildConfiguration.xml"
@@ -144,20 +143,7 @@ jobs:
                 for compiler in clang clang++; do
                   if [[ -e "$toolchain_bin/$compiler" && ! -e "$toolchain_bin/$compiler.real" ]]; then
                     mv "$toolchain_bin/$compiler" "$toolchain_bin/$compiler.real"
-                    printf "%s\n" \
-                      "#!/usr/bin/env bash" \
-                      "expanded=()" \
-                      "for arg in \"\$@\"; do" \
-                      "  if [[ \"\$arg\" == @* && -f \"\${arg:1}\" ]]; then" \
-                      "    while IFS= read -r line; do" \
-                      "      [[ -n \"\$line\" ]] && eval \"expanded+=( \$line )\"" \
-                      "    done < \"\${arg:1}\"" \
-                      "  else" \
-                      "    expanded+=(\"\$arg\")" \
-                      "  fi" \
-                      "done" \
-                      "exec /usr/local/bin/sccache \"\$0.real\" \"\${expanded[@]}\"" \
-                      > "$toolchain_bin/$compiler"
+                    printf "%s\n" "#!/usr/bin/env bash" "exec /usr/local/bin/sccache \"\$0.real\" \"\$@\"" > "$toolchain_bin/$compiler"
                     chmod +x "$toolchain_bin/$compiler"
                     echo "wrapped $toolchain_bin/$compiler -> sccache"
                   fi
