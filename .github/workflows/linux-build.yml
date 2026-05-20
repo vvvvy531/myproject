@@ -68,8 +68,9 @@ jobs:
           set -euo pipefail
           if [[ -f /tmp/ue-image-pull.pid ]]; then
             pull_pid="$(cat /tmp/ue-image-pull.pid)"
-            wait "$pull_pid" || { cat /tmp/ue-image-pull.log; exit 1; }
-            cat /tmp/ue-image-pull.log
+            while kill -0 "$pull_pid" 2>/dev/null; do sleep 5; done
+            cat /tmp/ue-image-pull.log || true
+            docker image inspect "$UE_IMAGE" >/dev/null 2>&1 || docker pull "$UE_IMAGE"
           else
             docker pull "$UE_IMAGE"
           fi
