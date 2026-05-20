@@ -56,18 +56,25 @@ jobs:
           lfs: false
           submodules: recursive
 
-      - name: Restore sccache compiler cache
-        id: sccache-restore
-        uses: actions/cache/restore@v4
-        with:
-          path: .sccache-cache
-          key: sccache-${{ runner.os }}-${{ github.sha }}
-          restore-keys: |
-            sccache-${{ runner.os }}-
-
       - name: Prepare output directory
         shell: bash
         run: mkdir -p dist .sccache-cache
+
+      - name: Restore sccache compiler cache from private builds repo
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.ARTIFACT_REPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          cache_tag="sccache-${{ runner.os }}"
+          rm -rf .sccache-cache
+          mkdir -p .sccache-cache .cache-restore
+          if gh release download "$cache_tag" -R "$ARTIFACT_REPO" -p sccache-cache.tar.zst -D .cache-restore --clobber; then
+            tar --zstd -xf .cache-restore/sccache-cache.tar.zst -C .sccache-cache || true
+            du -sh .sccache-cache || true
+          else
+            echo "No private sccache cache release yet: $cache_tag"
+          fi
 
       - name: Build Linux target in official UE container
         id: build
@@ -148,13 +155,23 @@ jobs:
           code="$(cat dist/build-exit-code.txt 2>/dev/null || echo 1)"
           echo "exit_code=$code" >> "$GITHUB_OUTPUT"
 
-      - name: Save sccache compiler cache
+      - name: Save sccache compiler cache to private builds repo
         if: always()
         continue-on-error: true
-        uses: actions/cache/save@v4
-        with:
-          path: .sccache-cache
-          key: ${{ steps.sccache-restore.outputs.cache-primary-key }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.ARTIFACT_REPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          cache_tag="sccache-${{ runner.os }}"
+          mkdir -p dist
+          du -sh .sccache-cache > dist/sccache-cache-size.txt 2>&1 || true
+          tar --zstd -cf dist/sccache-cache.tar.zst -C .sccache-cache . || true
+          if [[ -s dist/sccache-cache.tar.zst ]]; then
+            gh release view "$cache_tag" -R "$ARTIFACT_REPO" >/dev/null 2>&1 \
+              || gh release create "$cache_tag" -R "$ARTIFACT_REPO" --title "$cache_tag compiler cache" --notes "Rolling sccache compiler cache for Linux CI" --latest=false
+            gh release upload "$cache_tag" -R "$ARTIFACT_REPO" dist/sccache-cache.tar.zst dist/sccache-cache-size.txt --clobber
+          fi
 
       - name: Write manifest
         if: always()
