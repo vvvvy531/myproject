@@ -131,7 +131,7 @@ EOF
         shell: bash
         run: |
           build_exit_code="${{ steps.build.outputs.exit_code }}"
-          [[ -n "$build_exit_code" ]] || build_exit_code="$(cat dist/build-exit-code.txt 2>/dev/null || echo 1)"
+          [[ -n "$build_exit_code" ]] || build_exit_code="$(cat dist/build-exit-code.txt 2>/dev/null || echo 1)"`n          export BUILD_EXIT_CODE="$build_exit_code"
           cat > dist/manifest.json <<EOF
           {
             "sourceRepo": "$SOURCE_REPO",
@@ -173,3 +173,4 @@ EOF
         if: ${{ steps.build.outputs.exit_code != '0' }}
         shell: bash
         run: exit 1
+
