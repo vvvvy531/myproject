@@ -11,26 +11,31 @@ concurrency:
 
 permissions:
   contents: read
+  packages: read
 
 env:
   SOURCE_REPO: vvvvy531/myproject-source
   ARTIFACT_REPO: vvvvy531/myproject-linux-builds
   PROJECT_FILE: MyProject.uproject
   TARGET_NAME: MyProject
+  UE_IMAGE: ghcr.io/epicgames/unreal-engine:dev-slim-5.7.4
 
 jobs:
   build-linux:
     name: UE 5.7.4 Linux smoke build
     runs-on: ubuntu-latest
     timeout-minutes: 120
-    container:
-      image: ghcr.io/epicgames/unreal-engine:dev-slim-5.7.4
-      credentials:
-        username: ${{ secrets.GHCR_USERNAME }}
-        password: ${{ secrets.GHCR_TOKEN }}
-      options: --user root
 
     steps:
+      - name: Free hosted runner disk
+        shell: bash
+        run: |
+          set -euo pipefail
+          df -h
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          sudo docker system prune -af || true
+          df -h
+
       - name: Checkout private source
         uses: actions/checkout@v4
         with:
@@ -40,265 +45,94 @@ jobs:
           lfs: false
           submodules: recursive
 
-      - name: Restore incremental build cache
-        uses: actions/cache@v4
-        with:
-          path: |
-            source/Binaries
-            source/Intermediate
-            source/DerivedDataCache
-            source/Saved/UnrealBuildTool
-            source/Plugins/**/Binaries
-            source/Plugins/**/Intermediate
-            /tmp/UnrealBuildTool
-            /home/ue4/.config/Epic/UnrealEngine/Common/DerivedDataCache
-            /home/ue4/.config/Epic/UnrealEngine/5.7/DerivedDataCache
-            /home/ue4/.config/Epic/UnrealEngine/5.7.4/DerivedDataCache
-            /tmp/sccache
-          key: ue-linux-main
-          restore-keys: |
-            ue-linux-
-
-
-      - name: Restore private zstd cache fallback
+      - name: Prepare output directory
         shell: bash
-        working-directory: source
-        continue-on-error: true
-        run: |
-          set -euo pipefail
-          mkdir -p ../cache-download
-          api="https://api.github.com/repos/${ARTIFACT_REPO}/releases/tags/linux-cache-main"
-          asset_url="$(curl -fsSL -H "Authorization: Bearer ${{ secrets.ARTIFACT_REPO_TOKEN }}" "$api" | python3 -c 'import json,sys; data=json.load(sys.stdin); print(next((a["url"] for a in data.get("assets", []) if a.get("name") == "ue-linux-main-cache.tar.zst"), ""))' || true)"
-          if [[ -n "$asset_url" ]]; then
-            curl -fsSL \
-              -H "Authorization: Bearer ${{ secrets.ARTIFACT_REPO_TOKEN }}" \
-              -H "Accept: application/octet-stream" \
-              "$asset_url" \
-              -o ../cache-download/ue-linux-main-cache.tar.zst
-            tar --use-compress-program=unzstd -xf ../cache-download/ue-linux-main-cache.tar.zst || true
-          else
-            echo "No private zstd cache fallback found"
-          fi
+        run: mkdir -p dist
 
+      - name: Login to GHCR
+        shell: bash
+        run: echo "${{ secrets.GHCR_TOKEN }}" | docker login ghcr.io -u "${{ secrets.GHCR_USERNAME }}" --password-stdin
 
-      - name: Configure UBT unity/adaptive and sccache
+      - name: Pull official Unreal Engine image
         shell: bash
         run: |
           set -euo pipefail
-          apt-get update
-          apt-get install -y zstd
-          mkdir -p "/home/ue4/.config/Unreal Engine/UnrealBuildTool"
-          mkdir -p "/home/ue4/.config/Epic/UnrealBuildTool"
-          cat > /tmp/BuildConfiguration.xml <<'EOF'
-          <?xml version="1.0" encoding="utf-8"?>
-          <Configuration xmlns="https://www.unrealengine.com/BuildConfiguration">
-            <BuildConfiguration>
-              <bUseUnityBuild>true</bUseUnityBuild>
-              <bUseAdaptiveUnityBuild>true</bUseAdaptiveUnityBuild>
-              <bAdaptiveUnityDisablesOptimizations>true</bAdaptiveUnityDisablesOptimizations>
-              <bAdaptiveUnityDisablesPCH>true</bAdaptiveUnityDisablesPCH>
-            </BuildConfiguration>
-          </Configuration>
-          EOF
-          cp /tmp/BuildConfiguration.xml "/home/ue4/.config/Unreal Engine/UnrealBuildTool/BuildConfiguration.xml"
-          cp /tmp/BuildConfiguration.xml "/home/ue4/.config/Epic/UnrealBuildTool/BuildConfiguration.xml"
+          docker pull "$UE_IMAGE"
+          docker image ls "$UE_IMAGE"
+          df -h
 
-          if ! command -v sccache >/dev/null 2>&1; then
-            curl -L https://github.com/mozilla/sccache/releases/download/v0.10.0/sccache-v0.10.0-x86_64-unknown-linux-musl.tar.gz -o /tmp/sccache.tar.gz
-            tar -xzf /tmp/sccache.tar.gz -C /tmp
-            install /tmp/sccache-v0.10.0-x86_64-unknown-linux-musl/sccache /usr/local/bin/sccache
-          fi
-          mkdir -p /tmp/sccache
-          export SCCACHE_DIR=/tmp/sccache
-          export SCCACHE_CACHE_SIZE=10G
-          echo "SCCACHE_DIR=$SCCACHE_DIR" >> "$GITHUB_ENV"
-          echo "SCCACHE_CACHE_SIZE=$SCCACHE_CACHE_SIZE" >> "$GITHUB_ENV"
-          sccache --stop-server || true
-          sccache --start-server || true
-          sccache --show-stats || true
-
-      - name: Locate Unreal Engine
-        shell: bash
-        run: |
-          set -euo pipefail
-          candidates=("/home/ue4/UnrealEngine" "/home/ue/UnrealEngine" "/opt/unreal-engine" "/opt/UnrealEngine" "/UnrealEngine" "/ue")
-          for dir in "${candidates[@]}"; do
-            for build_sh in "$dir/Engine/Build/BatchFiles/Linux/Build.sh" "$dir/Engine/Build/BatchFiles/Build.sh"; do
-              if [[ -x "$build_sh" ]]; then
-                echo "UE_ENGINE_DIR=$dir" >> "$GITHUB_ENV"
-                echo "UE_BUILD_SH=$build_sh" >> "$GITHUB_ENV"
-                exit 0
-              fi
-            done
-          done
-          found="$(find / \( -path '*/Engine/Build/BatchFiles/Linux/Build.sh' -o -path '*/Engine/Build/BatchFiles/Build.sh' \) -type f 2>/dev/null | head -n 1 || true)"
-          [[ -n "$found" ]] || { echo "Build.sh not found" >&2; exit 1; }
-          if [[ "$found" == */Engine/Build/BatchFiles/Linux/Build.sh ]]; then
-            echo "UE_ENGINE_DIR=${found%/Engine/Build/BatchFiles/Linux/Build.sh}" >> "$GITHUB_ENV"
-          else
-            echo "UE_ENGINE_DIR=${found%/Engine/Build/BatchFiles/Build.sh}" >> "$GITHUB_ENV"
-          fi
-          echo "UE_BUILD_SH=$found" >> "$GITHUB_ENV"
-
-      - name: Install ISPC toolchain path
-        shell: bash
-        run: |
-          set -euo pipefail
-          ispc_version="v1.30.0"
-          curl -fsSL "https://github.com/ispc/ispc/releases/download/${ispc_version}/ispc-${ispc_version}-linux.tar.gz" -o /tmp/ispc.tar.gz
-          tar -xzf /tmp/ispc.tar.gz -C /tmp
-          ispc_bin="/tmp/ispc-${ispc_version}-linux/bin/ispc"
-          [[ -x "$ispc_bin" ]] || { echo "ispc not found at $ispc_bin" >&2; exit 1; }
-          mkdir -p "$UE_ENGINE_DIR/Engine/Source/ThirdParty/Intel/ISPC/bin/Linux"
-          ln -sf "$ispc_bin" "$UE_ENGINE_DIR/Engine/Source/ThirdParty/Intel/ISPC/bin/Linux/ispc"
-          "$UE_ENGINE_DIR/Engine/Source/ThirdParty/Intel/ISPC/bin/Linux/ispc" --version
-      - name: Patch source for Linux smoke
-        shell: bash
-        working-directory: source
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          import json
-          from pathlib import Path
-
-          project = Path('MyProject.uproject')
-          data = json.loads(project.read_text(encoding='utf-8'))
-          plugins = data.setdefault('Plugins', [])
-          disabled = {'AIFeature'}
-          seen = {item.get('Name') for item in plugins}
-          for item in plugins:
-              if item.get('Name') in disabled:
-                  item['Enabled'] = False
-          for name in sorted(disabled - seen):
-              plugins.append({'Name': name, 'Enabled': False})
-          project.write_text(json.dumps(data, indent='\t', ensure_ascii=False) + '\n', encoding='utf-8')
-
-          game_content = Path('Plugins/GameContentFeature/Source/GameContentFeature/GameContentFeature.Build.cs')
-          text = game_content.read_text(encoding='utf-8')
-          block = "\n        PrivateIncludePathModuleNames.AddRange(new string[]\n        {\n            \"AIFeature\"\n        });\n"
-          game_content.write_text(text.replace(block, "\n"), encoding='utf-8')
-
-          for p in Path('Plugins').glob('**/*.uplugin'):
-              pdata = json.loads(p.read_text(encoding='utf-8'))
-              changed = False
-              if p.name == 'AIFeature.uplugin':
-                  pdata['SupportedTargetPlatforms'] = ['Win64']
-                  changed = True
-              for dep in pdata.get('Plugins', []):
-                  if dep.get('Name') == 'AIFeature':
-                      dep['Enabled'] = False
-                      changed = True
-              if changed:
-                  p.write_text(json.dumps(pdata, indent='\t', ensure_ascii=False) + '\n', encoding='utf-8')
-                  print(f'patched {p}')
-
-          p = Path('Source/MyProject/MyProject.cpp')
-          raw = p.read_bytes()
-          if raw.startswith(b'\xff\xfe') or raw.startswith(b'\xfe\xff'):
-              p.write_text(raw.decode('utf-16'), encoding='utf-8', newline='')
-              print(f'converted UTF-16 to UTF-8: {p}')
-
-          for p in Path('Plugins/MapGenFeature/Source/ThirdParty/entt/include').glob('**/*.hpp'):
-              text = p.read_text(encoding='utf-8', errors='ignore')
-              new = text.replace('operator"" _hs', 'operator""_hs').replace('operator"" _hws', 'operator""_hws')
-              if new != text:
-                  p.write_text(new, encoding='utf-8')
-                  print(f'patched entt literal operators: {p}')
-
-          for p in Path('Plugins').glob('**/*.[ch]pp'):
-              text = p.read_text(encoding='utf-8', errors='ignore')
-              new = text.replace('"Misc/CRC.h"', '"Misc/Crc.h"')
-              if new != text:
-                  p.write_text(new, encoding='utf-8')
-                  print(f'patched include case: {p}')
-
-          p = Path('Plugins/TimeManagementFeature/Source/TimeManagementFeature/TimeManagementFeature.Build.cs')
-          text = p.read_text(encoding='utf-8')
-          if 'bUseRTTI = true;' not in text:
-              text = text.replace('PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;', 'PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;\n\t\tbUseRTTI = true;')
-              p.write_text(text, encoding='utf-8')
-              print(f'enabled RTTI: {p}')
-          PY
-          if ! command -v flatc >/dev/null 2>&1; then
-            apt-get update
-            apt-get install -y flatbuffers-compiler
-          fi
-          install -m 755 "$(command -v flatc)" Plugins/FlatBuffers/Tools/flatc/flatc.exe 2>/dev/null || true
-
-      - name: Build Linux Development target
+      - name: Build Linux target in official UE container
         id: build
         shell: bash
-        working-directory: source
         continue-on-error: true
-        run: |
-          set -o pipefail
-          mkdir -p ../dist
-          sccache --zero-stats || true
-          set +e
-          "$UE_BUILD_SH" \
-            "$TARGET_NAME" Linux Development \
-            "$PWD/$PROJECT_FILE" \
-            -WaitMutex -NoHotReload -NoUBA -MaxParallelActions=1 -VeryVerbose \
-            2>&1 | tee ../dist/build.log
-          code=${PIPESTATUS[0]}
-          set -e
-          if grep -q "Result: Failed" ../dist/build.log; then code=1; fi
-
-          sccache --show-stats > ../dist/sccache-stats.txt 2>&1 || true
-          cat ../dist/sccache-stats.txt
-          printf 'exit_code=%s\n' "$code" >> "$GITHUB_OUTPUT"
-          printf '%s\n' "$code" > ../dist/build-exit-code.txt
-          exit 0
-
-
-
-      - name: Build Editor target for benchmark
-        if: ${{ inputs.run_benchmark == true }}
-        shell: bash
-        working-directory: source
         run: |
           set -euo pipefail
-          sccache --zero-stats || true
-          "$UE_BUILD_SH" \
-            "${TARGET_NAME}Editor" Linux Development \
-            "$PWD/$PROJECT_FILE" \
-            -WaitMutex -NoHotReload -NoUBA -MaxParallelActions=2
+          docker run --rm --user root \
+            -e PROJECT_FILE="$PROJECT_FILE" \
+            -e TARGET_NAME="$TARGET_NAME" \
+            -v "$PWD/source:/workspace/source" \
+            -v "$PWD/dist:/workspace/dist" \
+            -w /workspace/source \
+            "$UE_IMAGE" \
+            bash -lc '
+              set -o pipefail
+              mkdir -p ../dist
+              if ! command -v zstd >/dev/null 2>&1; then apt-get update && apt-get install -y zstd; fi
+              if ! command -v sccache >/dev/null 2>&1; then
+                curl -L https://github.com/mozilla/sccache/releases/download/v0.10.0/sccache-v0.10.0-x86_64-unknown-linux-musl.tar.gz -o /tmp/sccache.tar.gz
+                tar -xzf /tmp/sccache.tar.gz -C /tmp
+                install /tmp/sccache-v0.10.0-x86_64-unknown-linux-musl/sccache /usr/local/bin/sccache
+              fi
+              if [[ ! -x /home/ue4/UnrealEngine/Engine/Source/ThirdParty/Intel/ISPC/bin/Linux/ispc ]]; then
+                ispc_version="v1.30.0"
+                curl -fsSL "https://github.com/ispc/ispc/releases/download/${ispc_version}/ispc-${ispc_version}-linux.tar.gz" -o /tmp/ispc.tar.gz
+                tar -xzf /tmp/ispc.tar.gz -C /tmp
+                mkdir -p /home/ue4/UnrealEngine/Engine/Source/ThirdParty/Intel/ISPC/bin/Linux
+                ln -sf "/tmp/ispc-${ispc_version}-linux/bin/ispc" /home/ue4/UnrealEngine/Engine/Source/ThirdParty/Intel/ISPC/bin/Linux/ispc
+              fi
+              if ! command -v flatc >/dev/null 2>&1; then apt-get update && apt-get install -y flatbuffers-compiler; fi
+              mkdir -p Plugins/FlatBuffers/Tools/flatc Plugins/FlatBuffers/Tools/include
+              install -m 755 "$(command -v flatc)" Plugins/FlatBuffers/Tools/flatc/flatc || true
+              mkdir -p "/home/ue4/.config/Unreal Engine/UnrealBuildTool" "/home/ue4/.config/Epic/UnrealBuildTool"
+              cat > /tmp/BuildConfiguration.xml <<EOF
+<?xml version="1.0" encoding="utf-8"?>
+<Configuration xmlns="https://www.unrealengine.com/BuildConfiguration">
+  <BuildConfiguration>
+    <bUseUnityBuild>true</bUseUnityBuild>
+    <bUseAdaptiveUnityBuild>true</bUseAdaptiveUnityBuild>
+    <bAdaptiveUnityDisablesOptimizations>true</bAdaptiveUnityDisablesOptimizations>
+    <bAdaptiveUnityDisablesPCH>true</bAdaptiveUnityDisablesPCH>
+  </BuildConfiguration>
+</Configuration>
+EOF
+              cp /tmp/BuildConfiguration.xml "/home/ue4/.config/Unreal Engine/UnrealBuildTool/BuildConfiguration.xml"
+              cp /tmp/BuildConfiguration.xml "/home/ue4/.config/Epic/UnrealBuildTool/BuildConfiguration.xml"
+              export SCCACHE_DIR=/tmp/sccache SCCACHE_CACHE_SIZE=10G
+              sccache --stop-server || true
+              sccache --start-server || true
+              set +e
+              /home/ue4/UnrealEngine/Engine/Build/BatchFiles/Linux/Build.sh "$TARGET_NAME" Linux Development "$PWD/$PROJECT_FILE" -WaitMutex -NoHotReload -NoUBA -MaxParallelActions=1 -VeryVerbose 2>&1 | tee ../dist/build.log
+              code=${PIPESTATUS[0]}
+              set -e
+              if grep -q "Result: Failed" ../dist/build.log; then code=1; fi
+              sccache --show-stats > ../dist/sccache-stats.txt 2>&1 || true
+              cp /home/ue4/.config/Epic/UnrealBuildTool/Log.txt ../dist/ubt.log 2>/dev/null || true
+              find Intermediate -type f \( -name "*.log" -o -name "*.txt" -o -name "*.err" -o -name "*.response" -o -name "*.rsp" \) -print > ../dist/intermediate-diagnostics-files.txt 2>/dev/null || true
+              tar -czf ../dist/intermediate-diagnostics.tar.gz -T ../dist/intermediate-diagnostics-files.txt 2>/dev/null || true
+              tar -czf "../dist/MyProject-Linux-${GITHUB_RUN_NUMBER:-0}.tar.gz" Binaries Saved Intermediate/Build Plugins/*/Binaries Plugins/*/Intermediate 2>/dev/null || true
+              printf "%s\n" "$code" > ../dist/build-exit-code.txt
+              exit 0
+            '
+          code="$(cat dist/build-exit-code.txt 2>/dev/null || echo 1)"
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
 
-      - name: Run benchmark commandlet
-        if: ${{ inputs.run_benchmark == true }}
-        shell: bash
-        working-directory: source
-        continue-on-error: true
-        run: |
-          set -o pipefail
-          editor="$(find "$UE_ENGINE_DIR/Engine/Binaries/Linux" -maxdepth 1 -type f \( -name 'UnrealEditor-Cmd' -o -name 'UnrealEditor' \) | head -n 1)"
-          if [[ -z "$editor" ]]; then
-            echo "UnrealEditor-Cmd not found" | tee ../dist/benchmark.log
-            exit 0
-          fi
-          "$editor" "$PWD/$PROJECT_FILE" -run=Benchmark -unattended -nullrhi -nop4 2>&1 | tee ../dist/benchmark.log
-          mkdir -p ../dist/benchmarks
-          cp -r Saved/Benchmarks/* ../dist/benchmarks/ 2>/dev/null || true
-      - name: Package build outputs and logs
+      - name: Write manifest
         if: always()
         shell: bash
-        working-directory: source
         run: |
-          set -euo pipefail
-          mkdir -p ../dist
-          cp /home/ue4/.config/Epic/UnrealBuildTool/Log.txt ../dist/ubt.log 2>/dev/null || true
-          cp "$UE_ENGINE_DIR/Engine/Source/Epic/UnrealBuildTool/Log.txt" ../dist/ubt-engine.log 2>/dev/null || true
-          cp /tmp/sccache-wrapper.log ../dist/sccache-wrapper.log 2>/dev/null || true
-          cp /tmp/sccache-wrapper-failures.log ../dist/sccache-wrapper-failures.log 2>/dev/null || true
-          find Intermediate -type f \( -name '*.log' -o -name '*.txt' -o -name '*.err' -o -name '*.response' -o -name '*.rsp' \) -print > ../dist/intermediate-diagnostics-files.txt 2>/dev/null || true
-          tar -czf ../dist/intermediate-diagnostics.tar.gz -T ../dist/intermediate-diagnostics-files.txt 2>/dev/null || true
-
           build_exit_code="${{ steps.build.outputs.exit_code }}"
-
-          if [[ -z "$build_exit_code" && -f ../dist/build-exit-code.txt ]]; then
-            build_exit_code="$(cat ../dist/build-exit-code.txt)"
-          fi
-          cat > ../dist/manifest.json <<EOF
+          [[ -n "$build_exit_code" ]] || build_exit_code="$(cat dist/build-exit-code.txt 2>/dev/null || echo 1)"
+          cat > dist/manifest.json <<EOF
           {
             "sourceRepo": "$SOURCE_REPO",
             "runId": "${GITHUB_RUN_ID}",
@@ -309,34 +143,6 @@ jobs:
             "buildExitCode": "$build_exit_code"
           }
           EOF
-          tar -czf "../dist/MyProject-Linux-${GITHUB_RUN_NUMBER}.tar.gz" \
-            Binaries Saved Intermediate/Build Plugins/*/Binaries Plugins/*/Intermediate 2>/dev/null || true
-
-
-      - name: Create private zstd cache fallback
-        if: always()
-        shell: bash
-        working-directory: source
-        continue-on-error: true
-        run: |
-          set -euo pipefail
-          mkdir -p ../dist
-          tar --use-compress-program="zstd -T0 -3" -cf ../dist/ue-linux-main-cache.tar.zst \
-            Binaries Intermediate DerivedDataCache Saved/UnrealBuildTool Plugins/*/Binaries Plugins/*/Intermediate /home/ue4/.config/Epic/UnrealEngine/Common/DerivedDataCache /home/ue4/.config/Epic/UnrealEngine/5.7/DerivedDataCache /home/ue4/.config/Epic/UnrealEngine/5.7.4/DerivedDataCache /tmp/sccache 2>/dev/null || true
-
-      - name: Publish private zstd cache fallback
-        if: always()
-        uses: softprops/action-gh-release@v2
-        with:
-          repository: ${{ env.ARTIFACT_REPO }}
-          token: ${{ secrets.ARTIFACT_REPO_TOKEN }}
-          tag_name: linux-cache-main
-          name: Linux cache main
-          prerelease: true
-          make_latest: false
-          files: dist/ue-linux-main-cache.tar.zst
-          fail_on_unmatched_files: false
-          overwrite_files: true
 
       - name: Publish private release with logs
         if: always()
@@ -357,26 +163,13 @@ jobs:
             dist/sccache-stats.txt
             dist/build-exit-code.txt
             dist/ubt.log
-            dist/ubt-engine.log
-            dist/sccache-wrapper.log
-            dist/sccache-wrapper-failures.log
             dist/intermediate-diagnostics-files.txt
             dist/intermediate-diagnostics.tar.gz
           fail_on_unmatched_files: false
           draft: false
+          overwrite_files: true
 
       - name: Fail job if build failed
         if: ${{ steps.build.outputs.exit_code != '0' }}
         shell: bash
         run: exit 1
-
-
-
-
-
-
-
-
-
-
-
