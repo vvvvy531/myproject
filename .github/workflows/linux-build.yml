@@ -12,7 +12,6 @@ concurrency:
 permissions:
   contents: read
   packages: read
-  actions: write
 
 env:
   SOURCE_REPO: vvvvy531/myproject-source
@@ -36,11 +35,18 @@ jobs:
           sudo docker system prune -af || true
           df -h
 
-      - name: Checkout public CI
-        uses: actions/checkout@v4
+      - name: Login to GHCR
+        uses: docker/login-action@v3
         with:
-          path: ci
+          registry: ghcr.io
+          username: ${{ secrets.GHCR_USERNAME }}
+          password: ${{ secrets.GHCR_TOKEN }}
 
+      - name: Start UE image pull in background
+        shell: bash
+        run: |
+          set -euo pipefail
+          nohup bash -lc 'docker pull "$UE_IMAGE" > /tmp/ue-image-pull.log 2>&1' & echo $! > /tmp/ue-image-pull.pid
       - name: Checkout private source
         uses: actions/checkout@v4
         with:
@@ -54,34 +60,21 @@ jobs:
         shell: bash
         run: mkdir -p dist
 
-      - name: Login to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ secrets.GHCR_USERNAME }}
-          password: ${{ secrets.GHCR_TOKEN }}
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build cached Linux build image
-        uses: docker/build-push-action@v5
-        with:
-          context: ci
-          file: ci/.github/docker/linux-build.Dockerfile
-          load: true
-          tags: myproject-linux-build:gha
-          build-args: |
-            UE_IMAGE=${{ env.UE_IMAGE }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Build Linux target in cached UE container
+      - name: Build Linux target in official UE container
         id: build
         shell: bash
         continue-on-error: true
         run: |
           set -euo pipefail
+          if [[ -f /tmp/ue-image-pull.pid ]]; then
+            pull_pid="$(cat /tmp/ue-image-pull.pid)"
+            wait "$pull_pid" || { cat /tmp/ue-image-pull.log; exit 1; }
+            cat /tmp/ue-image-pull.log
+          else
+            docker pull "$UE_IMAGE"
+          fi
+          docker image ls "$UE_IMAGE"
+          df -h
           docker run --rm --user root \
             -e PROJECT_FILE="$PROJECT_FILE" \
             -e TARGET_NAME="$TARGET_NAME" \
@@ -89,14 +82,24 @@ jobs:
             -v "$PWD/source:/workspace/source" \
             -v "$PWD/dist:/workspace/dist" \
             -w /workspace/source \
-            myproject-linux-build:gha \
+            "$UE_IMAGE" \
             bash -lc '
               set -o pipefail
               mkdir -p ../dist
-              command -v zstd >/dev/null
-              command -v sccache >/dev/null
-              command -v flatc >/dev/null
-              test -x /home/ue4/UnrealEngine/Engine/Source/ThirdParty/Intel/ISPC/bin/Linux/ispc
+              if ! command -v zstd >/dev/null 2>&1; then apt-get update && apt-get install -y zstd; fi
+              if ! command -v sccache >/dev/null 2>&1; then
+                curl -L https://github.com/mozilla/sccache/releases/download/v0.10.0/sccache-v0.10.0-x86_64-unknown-linux-musl.tar.gz -o /tmp/sccache.tar.gz
+                tar -xzf /tmp/sccache.tar.gz -C /tmp
+                install /tmp/sccache-v0.10.0-x86_64-unknown-linux-musl/sccache /usr/local/bin/sccache
+              fi
+              if [[ ! -x /home/ue4/UnrealEngine/Engine/Source/ThirdParty/Intel/ISPC/bin/Linux/ispc ]]; then
+                ispc_version="v1.30.0"
+                curl -fsSL "https://github.com/ispc/ispc/releases/download/${ispc_version}/ispc-${ispc_version}-linux.tar.gz" -o /tmp/ispc.tar.gz
+                tar -xzf /tmp/ispc.tar.gz -C /tmp
+                mkdir -p /home/ue4/UnrealEngine/Engine/Source/ThirdParty/Intel/ISPC/bin/Linux
+                ln -sf "/tmp/ispc-${ispc_version}-linux/bin/ispc" /home/ue4/UnrealEngine/Engine/Source/ThirdParty/Intel/ISPC/bin/Linux/ispc
+              fi
+              if ! command -v flatc >/dev/null 2>&1; then apt-get update && apt-get install -y flatbuffers-compiler; fi
               mkdir -p Plugins/FlatBuffers/Tools/flatc Plugins/FlatBuffers/Tools/include
               install -m 755 "$(command -v flatc)" Plugins/FlatBuffers/Tools/flatc/flatc || true
               install -m 755 "$(command -v flatc)" Plugins/FlatBuffers/Tools/flatc/flatc.exe || true
