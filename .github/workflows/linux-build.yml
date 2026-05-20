@@ -136,7 +136,7 @@ jobs:
               cp /tmp/BuildConfiguration.xml "/home/ue4/.config/Epic/UnrealBuildTool/BuildConfiguration.xml"
               export SCCACHE_DIR=/workspace/.sccache-cache SCCACHE_CACHE_SIZE=8G SCCACHE_BASEDIRS=/workspace/source SCCACHE_IGNORE_SERVER_IO_ERROR=1
               export UE_SCCACHE_EXECUTABLE=/usr/local/bin/sccache CCACHE_EXEC=/usr/local/bin/sccache
-              clangxx_path="$(find /home/ue4/UnrealEngine/Engine/Extras/ThirdPartyNotUE/SDKs/HostLinux -path "*/bin/clang++" | head -n 1)"
+              clangxx_path="$(find /home/ue4/UnrealEngine/Engine/Extras/ThirdPartyNotUE/SDKs/HostLinux -path "*/x86_64-unknown-linux-gnu/bin/clang++" | head -n 1)"
               echo "sccache clang++ candidate: ${clangxx_path:-<none>}"
               if [[ -n "$clangxx_path" ]]; then
                 toolchain_bin="$(dirname "$clangxx_path")"
