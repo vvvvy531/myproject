@@ -36,6 +36,11 @@ jobs:
           sudo docker system prune -af || true
           df -h
 
+      - name: Checkout public CI
+        uses: actions/checkout@v4
+        with:
+          path: ci
+
       - name: Checkout private source
         uses: actions/checkout@v4
         with:
@@ -62,8 +67,8 @@ jobs:
       - name: Build cached Linux build image
         uses: docker/build-push-action@v5
         with:
-          context: .
-          file: .github/docker/linux-build.Dockerfile
+          context: ci
+          file: ci/.github/docker/linux-build.Dockerfile
           load: true
           tags: myproject-linux-build:gha
           build-args: |
