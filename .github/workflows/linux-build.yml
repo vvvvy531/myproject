@@ -56,9 +56,18 @@ jobs:
           lfs: false
           submodules: recursive
 
+      - name: Restore sccache compiler cache
+        id: sccache-restore
+        uses: actions/cache/restore@v4
+        with:
+          path: .sccache-cache
+          key: sccache-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            sccache-${{ runner.os }}-
+
       - name: Prepare output directory
         shell: bash
-        run: mkdir -p dist
+        run: mkdir -p dist .sccache-cache
 
       - name: Build Linux target in official UE container
         id: build
@@ -82,6 +91,7 @@ jobs:
             -e GITHUB_RUN_NUMBER="$GITHUB_RUN_NUMBER" \
             -v "$PWD/source:/workspace/source" \
             -v "$PWD/dist:/workspace/dist" \
+            -v "$PWD/.sccache-cache:/workspace/.sccache-cache" \
             -w /workspace/source \
             "$UE_IMAGE" \
             bash -lc '
@@ -117,7 +127,8 @@ jobs:
                 "</Configuration>" > /tmp/BuildConfiguration.xml
               cp /tmp/BuildConfiguration.xml "/home/ue4/.config/Unreal Engine/UnrealBuildTool/BuildConfiguration.xml"
               cp /tmp/BuildConfiguration.xml "/home/ue4/.config/Epic/UnrealBuildTool/BuildConfiguration.xml"
-              export SCCACHE_DIR=/tmp/sccache SCCACHE_CACHE_SIZE=10G
+              export SCCACHE_DIR=/workspace/.sccache-cache SCCACHE_CACHE_SIZE=8G
+              export UE_SCCACHE_EXECUTABLE=/usr/local/bin/sccache CCACHE_EXEC=/usr/local/bin/sccache
               sccache --stop-server || true
               sccache --start-server || true
               set +e
@@ -126,6 +137,7 @@ jobs:
               set -e
               if grep -q "Result: Failed" ../dist/build.log; then code=1; fi
               sccache --show-stats > ../dist/sccache-stats.txt 2>&1 || true
+              du -sh "$SCCACHE_DIR" >> ../dist/sccache-stats.txt 2>&1 || true
               cp /home/ue4/.config/Epic/UnrealBuildTool/Log.txt ../dist/ubt.log 2>/dev/null || true
               find Intermediate -type f \( -name "*.log" -o -name "*.txt" -o -name "*.err" -o -name "*.response" -o -name "*.rsp" \) -print > ../dist/intermediate-diagnostics-files.txt 2>/dev/null || true
               tar -czf ../dist/intermediate-diagnostics.tar.gz -T ../dist/intermediate-diagnostics-files.txt 2>/dev/null || true
@@ -135,6 +147,14 @@ jobs:
             '
           code="$(cat dist/build-exit-code.txt 2>/dev/null || echo 1)"
           echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+
+      - name: Save sccache compiler cache
+        if: always()
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: .sccache-cache
+          key: ${{ steps.sccache-restore.outputs.cache-primary-key }}
 
       - name: Write manifest
         if: always()
