@@ -143,7 +143,20 @@ jobs:
                 for compiler in clang clang++; do
                   if [[ -e "$toolchain_bin/$compiler" && ! -e "$toolchain_bin/$compiler.real" ]]; then
                     mv "$toolchain_bin/$compiler" "$toolchain_bin/$compiler.real"
-                    printf "%s\n" "#!/usr/bin/env bash" "exec /usr/local/bin/sccache \"\$0.real\" \"\$@\"" > "$toolchain_bin/$compiler"
+                    printf "%s\n" \
+                      "#!/usr/bin/env bash" \
+                      "expanded=()" \
+                      "for arg in \"\$@\"; do" \
+                      "  if [[ \"\$arg\" == @* && -f \"\${arg:1}\" ]]; then" \
+                      "    while IFS= read -r line; do" \
+                      "      [[ -n \"\$line\" ]] && expanded+=(\"\$line\")" \
+                      "    done < \"\${arg:1}\"" \
+                      "  else" \
+                      "    expanded+=(\"\$arg\")" \
+                      "  fi" \
+                      "done" \
+                      "exec /usr/local/bin/sccache \"\$0.real\" \"\${expanded[@]}\"" \
+                      > "$toolchain_bin/$compiler"
                     chmod +x "$toolchain_bin/$compiler"
                     echo "wrapped $toolchain_bin/$compiler -> sccache"
                   fi
