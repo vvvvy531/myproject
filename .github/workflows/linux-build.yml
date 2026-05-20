@@ -149,7 +149,7 @@ jobs:
                       "for arg in \"\$@\"; do" \
                       "  if [[ \"\$arg\" == @* && -f \"\${arg:1}\" ]]; then" \
                       "    while IFS= read -r line; do" \
-                      "      [[ -n \"\$line\" ]] && expanded+=(\"\$line\")" \
+                      "      [[ -n \"\$line\" ]] && eval \"expanded+=( \$line )\"" \
                       "    done < \"\${arg:1}\"" \
                       "  else" \
                       "    expanded+=(\"\$arg\")" \
