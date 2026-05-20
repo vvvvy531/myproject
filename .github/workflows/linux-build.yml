@@ -134,12 +134,26 @@ jobs:
                 "</Configuration>" > /tmp/BuildConfiguration.xml
               cp /tmp/BuildConfiguration.xml "/home/ue4/.config/Unreal Engine/UnrealBuildTool/BuildConfiguration.xml"
               cp /tmp/BuildConfiguration.xml "/home/ue4/.config/Epic/UnrealBuildTool/BuildConfiguration.xml"
-              export SCCACHE_DIR=/workspace/.sccache-cache SCCACHE_CACHE_SIZE=8G
+              export SCCACHE_DIR=/workspace/.sccache-cache SCCACHE_CACHE_SIZE=8G SCCACHE_BASEDIRS=/workspace/source SCCACHE_IGNORE_SERVER_IO_ERROR=1
               export UE_SCCACHE_EXECUTABLE=/usr/local/bin/sccache CCACHE_EXEC=/usr/local/bin/sccache
+              clangxx_path="$(find /home/ue4/UnrealEngine/Engine/Extras/ThirdPartyNotUE/SDKs/HostLinux -path "*/bin/clang++" -type f | head -n 1)"
+              if [[ -n "$clangxx_path" ]]; then
+                toolchain_bin="$(dirname "$clangxx_path")"
+                for compiler in clang clang++; do
+                  if [[ -x "$toolchain_bin/$compiler" && ! -e "$toolchain_bin/$compiler.real" ]]; then
+                    mv "$toolchain_bin/$compiler" "$toolchain_bin/$compiler.real"
+                    cat > "$toolchain_bin/$compiler" <<'WRAP'
+#!/usr/bin/env bash
+exec /usr/local/bin/sccache "$0.real" "$@"
+WRAP
+                    chmod +x "$toolchain_bin/$compiler"
+                  fi
+                done
+              fi
               sccache --stop-server || true
               sccache --start-server || true
               set +e
-              /home/ue4/UnrealEngine/Engine/Build/BatchFiles/Linux/Build.sh "$TARGET_NAME" Linux Development "$PWD/$PROJECT_FILE" -WaitMutex -NoHotReload -NoUBA -MaxParallelActions=1 -VeryVerbose 2>&1 | tee ../dist/build.log
+              /home/ue4/UnrealEngine/Engine/Build/BatchFiles/Linux/Build.sh "$TARGET_NAME" Linux Development "$PWD/$PROJECT_FILE" -WaitMutex -NoHotReload -NoUBA -MaxParallelActions=4 -VeryVerbose 2>&1 | tee ../dist/build.log
               code=${PIPESTATUS[0]}
               set -e
               if grep -q "Result: Failed" ../dist/build.log; then code=1; fi
