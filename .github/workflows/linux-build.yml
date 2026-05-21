@@ -253,16 +253,25 @@ jobs:
           mkdir -p dist
           (
             cd source
-            tar --zstd -cf ../dist/ue-build-products.tar.zst \
-              Binaries Intermediate Saved/UnrealBuildTool \
-              Plugins/*/Binaries Plugins/*/Intermediate \
-              2>/dev/null || true
+            : > ../dist/ue-build-products-files.txt
+            for path in Binaries Intermediate Saved/UnrealBuildTool Plugins; do
+              [[ -e "$path" ]] || continue
+              if [[ "$path" == "Plugins" ]]; then
+                find Plugins -type f \( -path '*/Binaries/*' -o -path '*/Intermediate/*' \) -print >> ../dist/ue-build-products-files.txt
+              else
+                find "$path" -type f -print >> ../dist/ue-build-products-files.txt
+              fi
+            done
+            echo "object_count=$(grep -c '\.o$' ../dist/ue-build-products-files.txt || true)" > ../dist/ue-build-products-size.txt
+            echo "file_count=$(wc -l < ../dist/ue-build-products-files.txt)" >> ../dist/ue-build-products-size.txt
+            grep '\.o$' ../dist/ue-build-products-files.txt | head -50 > ../dist/ue-build-products-object-sample.txt || true
+            tar --zstd -cf ../dist/ue-build-products.tar.zst -T ../dist/ue-build-products-files.txt 2>/dev/null || true
           )
-          du -sh dist/ue-build-products.tar.zst > dist/ue-build-products-size.txt 2>&1 || true
+          du -sh dist/ue-build-products.tar.zst >> dist/ue-build-products-size.txt 2>&1 || true
           if [[ -s dist/ue-build-products.tar.zst ]]; then
             gh release view "$cache_tag" -R "$ARTIFACT_REPO" >/dev/null 2>&1 \
               || gh release create "$cache_tag" -R "$ARTIFACT_REPO" --title "$cache_tag UE build products" --notes "Rolling UE Binaries/Intermediate cache for Linux CI" --latest=false
-            gh release upload "$cache_tag" -R "$ARTIFACT_REPO" dist/ue-build-products.tar.zst dist/ue-build-products-size.txt --clobber
+            gh release upload "$cache_tag" -R "$ARTIFACT_REPO" dist/ue-build-products.tar.zst dist/ue-build-products-size.txt dist/ue-build-products-files.txt dist/ue-build-products-object-sample.txt --clobber
           fi
 
       - name: Write manifest
@@ -321,6 +330,7 @@ jobs:
         if: ${{ steps.build.outputs.exit_code != '0' }}
         shell: bash
         run: exit 1
+
 
 
 
