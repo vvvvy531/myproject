@@ -171,31 +171,7 @@ jobs:
               cp /tmp/BuildConfiguration.xml "/home/ue4/.config/Unreal Engine/UnrealBuildTool/BuildConfiguration.xml"
               cp /tmp/BuildConfiguration.xml "/home/ue4/.config/Epic/UnrealBuildTool/BuildConfiguration.xml"
               export SCCACHE_DIR=/workspace/.sccache-cache SCCACHE_CACHE_SIZE=8G SCCACHE_BASEDIRS=/workspace/source SCCACHE_IGNORE_SERVER_IO_ERROR=1
-              cat > /usr/local/bin/sccache-rsp-wrapper <<'PY'
-              #!/usr/bin/env python3
-              import os, shlex, sys
-              
-              def expand_args(args, seen=None):
-                  if seen is None:
-                      seen = set()
-                  out = []
-                  for arg in args:
-                      if arg.startswith('@') and len(arg) > 1:
-                          rsp = arg[1:].strip('"').strip("'")
-                          rsp_abs = os.path.abspath(rsp)
-                          if rsp_abs not in seen:
-                              try:
-                                  seen.add(rsp_abs)
-                                  with open(rsp, 'r', encoding='utf-8') as fh:
-                                      out.extend(expand_args(shlex.split(fh.read(), posix=True), seen))
-                                  continue
-                              except Exception:
-                                  pass
-                      out.append(arg)
-                  return out
-              
-              os.execv('/opt/sccache/sccache', ['sccache'] + expand_args(sys.argv[1:]))
-              PY
+              printf "%s" "IyEvdXNyL2Jpbi9lbnYgcHl0aG9uMwppbXBvcnQgb3MsIHNobGV4LCBzeXMKCmRlZiBleHBhbmRfYXJncyhhcmdzLCBzZWVuPU5vbmUpOgogICAgaWYgc2VlbiBpcyBOb25lOgogICAgICAgIHNlZW4gPSBzZXQoKQogICAgb3V0ID0gW10KICAgIGZvciBhcmcgaW4gYXJnczoKICAgICAgICBpZiBhcmcuc3RhcnRzd2l0aCgnQCcpIGFuZCBsZW4oYXJnKSA+IDE6CiAgICAgICAgICAgIHJzcCA9IGFyZ1sxOl0uc3RyaXAoJyInKS5zdHJpcCgiJyIpCiAgICAgICAgICAgIHJzcF9hYnMgPSBvcy5wYXRoLmFic3BhdGgocnNwKQogICAgICAgICAgICBpZiByc3BfYWJzIG5vdCBpbiBzZWVuOgogICAgICAgICAgICAgICAgdHJ5OgogICAgICAgICAgICAgICAgICAgIHNlZW4uYWRkKHJzcF9hYnMpCiAgICAgICAgICAgICAgICAgICAgd2l0aCBvcGVuKHJzcCwgJ3InLCBlbmNvZGluZz0ndXRmLTgnKSBhcyBmaDoKICAgICAgICAgICAgICAgICAgICAgICAgb3V0LmV4dGVuZChleHBhbmRfYXJncyhzaGxleC5zcGxpdChmaC5yZWFkKCksIHBvc2l4PVRydWUpLCBzZWVuKSkKICAgICAgICAgICAgICAgICAgICBjb250aW51ZQogICAgICAgICAgICAgICAgZXhjZXB0IEV4Y2VwdGlvbjoKICAgICAgICAgICAgICAgICAgICBwYXNzCiAgICAgICAgb3V0LmFwcGVuZChhcmcpCiAgICByZXR1cm4gb3V0Cgpvcy5leGVjdignL29wdC9zY2NhY2hlL3NjY2FjaGUnLCBbJ3NjY2FjaGUnXSArIGV4cGFuZF9hcmdzKHN5cy5hcmd2WzE6XSkp" | base64 -d > /usr/local/bin/sccache-rsp-wrapper
               chmod +x /usr/local/bin/sccache-rsp-wrapper
               unset UE_SCCACHE_EXECUTABLE CCACHE_EXEC
               clangxx_path="$(find /home/ue4/UnrealEngine/Engine/Extras/ThirdPartyNotUE/SDKs/HostLinux -path "*/x86_64-unknown-linux-gnu/bin/clang++" | head -n 1)"
@@ -205,35 +181,7 @@ jobs:
                 for compiler in clang clang++; do
                   if [[ -e "$toolchain_bin/$compiler" && ! -e "$toolchain_bin/$compiler.real" ]]; then
                     mv "$toolchain_bin/$compiler" "$toolchain_bin/$compiler.real"
-                    cat > "$toolchain_bin/$compiler" <<'PY'
-              #!/usr/bin/env python3
-              import os, shlex, sys
-              real = sys.argv[0] + '.real'
-              
-              def expand_args(args, seen=None):
-                  if seen is None:
-                      seen = set()
-                  out = []
-                  for arg in args:
-                      if arg.startswith('@') and len(arg) > 1:
-                          rsp = arg[1:].strip('"').strip("'")
-                          rsp_abs = os.path.abspath(rsp)
-                          if rsp_abs not in seen:
-                              try:
-                                  seen.add(rsp_abs)
-                                  with open(rsp, 'r', encoding='utf-8') as fh:
-                                      out.extend(expand_args(shlex.split(fh.read(), posix=True), seen))
-                                  continue
-                              except Exception:
-                                  pass
-                      out.append(arg)
-                  return out
-              
-              expanded = expand_args(sys.argv[1:])
-              if any(a.startswith('@') for a in expanded):
-                  print('sccache wrapper warning: unexpanded response arg remains', file=sys.stderr)
-              os.execv('/opt/sccache/sccache', ['sccache', real] + expanded)
-              PY
+                    printf "%s" "IyEvdXNyL2Jpbi9lbnYgcHl0aG9uMwppbXBvcnQgb3MsIHNobGV4LCBzeXMKcmVhbCA9IHN5cy5hcmd2WzBdICsgJy5yZWFsJwoKZGVmIGV4cGFuZF9hcmdzKGFyZ3MsIHNlZW49Tm9uZSk6CiAgICBpZiBzZWVuIGlzIE5vbmU6CiAgICAgICAgc2VlbiA9IHNldCgpCiAgICBvdXQgPSBbXQogICAgZm9yIGFyZyBpbiBhcmdzOgogICAgICAgIGlmIGFyZy5zdGFydHN3aXRoKCdAJykgYW5kIGxlbihhcmcpID4gMToKICAgICAgICAgICAgcnNwID0gYXJnWzE6XS5zdHJpcCgnIicpLnN0cmlwKCInIikKICAgICAgICAgICAgcnNwX2FicyA9IG9zLnBhdGguYWJzcGF0aChyc3ApCiAgICAgICAgICAgIGlmIHJzcF9hYnMgbm90IGluIHNlZW46CiAgICAgICAgICAgICAgICB0cnk6CiAgICAgICAgICAgICAgICAgICAgc2Vlbi5hZGQocnNwX2FicykKICAgICAgICAgICAgICAgICAgICB3aXRoIG9wZW4ocnNwLCAncicsIGVuY29kaW5nPSd1dGYtOCcpIGFzIGZoOgogICAgICAgICAgICAgICAgICAgICAgICBvdXQuZXh0ZW5kKGV4cGFuZF9hcmdzKHNobGV4LnNwbGl0KGZoLnJlYWQoKSwgcG9zaXg9VHJ1ZSksIHNlZW4pKQogICAgICAgICAgICAgICAgICAgIGNvbnRpbnVlCiAgICAgICAgICAgICAgICBleGNlcHQgRXhjZXB0aW9uOgogICAgICAgICAgICAgICAgICAgIHBhc3MKICAgICAgICBvdXQuYXBwZW5kKGFyZykKICAgIHJldHVybiBvdXQKCmV4cGFuZGVkID0gZXhwYW5kX2FyZ3Moc3lzLmFyZ3ZbMTpdKQppZiBhbnkoYS5zdGFydHN3aXRoKCdAJykgZm9yIGEgaW4gZXhwYW5kZWQpOgogICAgcHJpbnQoJ3NjY2FjaGUgd3JhcHBlciB3YXJuaW5nOiB1bmV4cGFuZGVkIHJlc3BvbnNlIGFyZyByZW1haW5zJywgZmlsZT1zeXMuc3RkZXJyKQpvcy5leGVjdignL29wdC9zY2NhY2hlL3NjY2FjaGUnLCBbJ3NjY2FjaGUnLCByZWFsXSArIGV4cGFuZGVkKQ==" | base64 -d > "$toolchain_bin/$compiler"
                     chmod +x "$toolchain_bin/$compiler"
                     echo "wrapped $toolchain_bin/$compiler -> /opt/sccache/sccache with recursive rsp expansion"
                   fi
