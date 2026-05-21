@@ -135,7 +135,9 @@ jobs:
               cp /tmp/BuildConfiguration.xml "/home/ue4/.config/Unreal Engine/UnrealBuildTool/BuildConfiguration.xml"
               cp /tmp/BuildConfiguration.xml "/home/ue4/.config/Epic/UnrealBuildTool/BuildConfiguration.xml"
               export SCCACHE_DIR=/workspace/.sccache-cache SCCACHE_CACHE_SIZE=8G SCCACHE_BASEDIRS=/workspace/source SCCACHE_IGNORE_SERVER_IO_ERROR=1
-              unset UE_SCCACHE_EXECUTABLE CCACHE_EXEC
+              printf "%s" "IyEvdXNyL2Jpbi9lbnYgcHl0aG9uMwppbXBvcnQgb3MsIHNobGV4LCBzeXMKZXhwYW5kZWQgPSBbXQpmb3IgYXJnIGluIHN5cy5hcmd2WzE6XToKICAgIGlmIGFyZy5zdGFydHN3aXRoKCJAIikgYW5kIGxlbihhcmcpID4gMToKICAgICAgICByc3AgPSBhcmdbMTpdLnN0cmlwKCciJykuc3RyaXAoIiciKQogICAgICAgIHRyeToKICAgICAgICAgICAgd2l0aCBvcGVuKHJzcCwgInIiLCBlbmNvZGluZz0idXRmLTgiKSBhcyBmaDoKICAgICAgICAgICAgICAgIGV4cGFuZGVkLmV4dGVuZChzaGxleC5zcGxpdChmaC5yZWFkKCksIHBvc2l4PVRydWUpKQogICAgICAgICAgICBjb250aW51ZQogICAgICAgIGV4Y2VwdCBFeGNlcHRpb246CiAgICAgICAgICAgIHBhc3MKICAgIGV4cGFuZGVkLmFwcGVuZChhcmcpCm9zLmV4ZWN2KCIvdXNyL2xvY2FsL2Jpbi9zY2NhY2hlIiwgWyJzY2NhY2hlIl0gKyBleHBhbmRlZCkK" | base64 -d > /usr/local/bin/sccache-rsp-wrapper
+              chmod +x /usr/local/bin/sccache-rsp-wrapper
+              export UE_SCCACHE_EXECUTABLE=/usr/local/bin/sccache-rsp-wrapper CCACHE_EXEC=/usr/local/bin/sccache-rsp-wrapper
               clangxx_path="$(find /home/ue4/UnrealEngine/Engine/Extras/ThirdPartyNotUE/SDKs/HostLinux -path "*/x86_64-unknown-linux-gnu/bin/clang++" | head -n 1)"
               echo "sccache clang++ candidate: ${clangxx_path:-<none>}"
               if [[ -n "$clangxx_path" ]]; then
