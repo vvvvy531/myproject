@@ -168,10 +168,13 @@ jobs:
                 mkdir -p /home/ue4/UnrealEngine/Engine/Source/ThirdParty/Intel/ISPC/bin/Linux
                 ln -sf "/tmp/ispc-${ispc_version}-linux/bin/ispc" /home/ue4/UnrealEngine/Engine/Source/ThirdParty/Intel/ISPC/bin/Linux/ispc
               fi
+              # UBT tracks tool mtimes; normalize generated/installed tools so fresh containers do not invalidate makefiles.
+              touch -d "2000-01-01 00:00:00 UTC" /home/ue4/UnrealEngine/Engine/Source/ThirdParty/Intel/ISPC/bin/Linux/ispc || true
               if ! command -v flatc >/dev/null 2>&1; then apt-get update && apt-get install -y flatbuffers-compiler; fi
               mkdir -p Plugins/FlatBuffers/Tools/flatc Plugins/FlatBuffers/Tools/include
               install -m 755 "$(command -v flatc)" Plugins/FlatBuffers/Tools/flatc/flatc || true
               install -m 755 "$(command -v flatc)" Plugins/FlatBuffers/Tools/flatc/flatc.exe || true
+              touch -d "2000-01-01 00:00:00 UTC" Plugins/FlatBuffers/Tools/flatc/flatc Plugins/FlatBuffers/Tools/flatc/flatc.exe || true
               mkdir -p "/home/ue4/.config/Unreal Engine/UnrealBuildTool" "/home/ue4/.config/Epic/UnrealBuildTool"
               printf "%s\n" \
                 "<?xml version=\"1.0\" encoding=\"utf-8\"?>" \
