@@ -143,7 +143,7 @@ jobs:
                 for compiler in clang clang++; do
                   if [[ -e "$toolchain_bin/$compiler" && ! -e "$toolchain_bin/$compiler.real" ]]; then
                     mv "$toolchain_bin/$compiler" "$toolchain_bin/$compiler.real"
-                    printf "%s\n" '#!/usr/bin/env python3' 'import os, shlex, sys' 'real = sys.argv[0] + ".real"' 'expanded = []' 'for arg in sys.argv[1:]:' '    if arg.startswith("@") and len(arg) > 1:' '        try:' '            with open(arg[1:], "r", encoding="utf-8") as fh:' '                expanded.extend(shlex.split(fh.read(), posix=True))' '            continue' '        except Exception:' '            pass' '    expanded.append(arg)' 'os.execv("/usr/local/bin/sccache", ["sccache", real] + expanded)' > "$toolchain_bin/$compiler"
+                    printf "%s" "IyEvdXNyL2Jpbi9lbnYgcHl0aG9uMwppbXBvcnQgb3MsIHNobGV4LCBzeXMKcmVhbCA9IHN5cy5hcmd2WzBdICsgIi5yZWFsIgpleHBhbmRlZCA9IFtdCmZvciBhcmcgaW4gc3lzLmFyZ3ZbMTpdOgogICAgaWYgYXJnLnN0YXJ0c3dpdGgoIkAiKSBhbmQgbGVuKGFyZykgPiAxOgogICAgICAgIHRyeToKICAgICAgICAgICAgd2l0aCBvcGVuKGFyZ1sxOl0sICJyIiwgZW5jb2Rpbmc9InV0Zi04IikgYXMgZmg6CiAgICAgICAgICAgICAgICBleHBhbmRlZC5leHRlbmQoc2hsZXguc3BsaXQoZmgucmVhZCgpLCBwb3NpeD1UcnVlKSkKICAgICAgICAgICAgY29udGludWUKICAgICAgICBleGNlcHQgRXhjZXB0aW9uOgogICAgICAgICAgICBwYXNzCiAgICBleHBhbmRlZC5hcHBlbmQoYXJnKQpvcy5leGVjdigiL3Vzci9sb2NhbC9iaW4vc2NjYWNoZSIsIFsic2NjYWNoZSIsIHJlYWxdICsgZXhwYW5kZWQpCg==" | base64 -d > "$toolchain_bin/$compiler"
                     chmod +x "$toolchain_bin/$compiler"
                     echo "wrapped $toolchain_bin/$compiler -> sccache with rsp expansion"
                   fi
