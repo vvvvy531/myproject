@@ -110,6 +110,10 @@ jobs:
             tar --zstd -xf .build-cache-restore/ue-build-products.tar.zst -C source || true
             echo "== restored UE cache sizes =="
             du -sh source/Binaries source/Intermediate source/Saved/UnrealBuildTool source/Plugins/*/Binaries source/Plugins/*/Intermediate 2>/dev/null || true
+            echo "== restored UE object files =="
+            find source -name '*.o' -type f | tee dist/restored-object-files.txt | wc -l || true
+            find source -name '*.gch' -o -name '*.d' | tee dist/restored-pch-dep-files.txt | wc -l || true
+            ls -l source/Plugins/Flow/Intermediate/Build/Linux/x64/UnrealGame/Development/Flow/FlowPinType.cpp.o source/Plugins/YarnSpinner-Unreal-main/Intermediate/Build/Linux/x64/UnrealGame/Development/YarnSpinner/Module.YarnSpinner.7.cpp.o 2>/dev/null || true
             echo "== restored UE cache oldest/newest before mtime fix =="
             stat source/MyProject.uproject || true
             find source/Intermediate source/Binaries source/Saved/UnrealBuildTool source/Plugins -type f 2>/dev/null | head -2000 | xargs -r stat -c '%Y %n' 2>/dev/null | sort -n | { head -10; tail -10; } || true
