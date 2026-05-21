@@ -31,8 +31,8 @@ jobs:
         run: |
           set -euo pipefail
           df -h
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
-          sudo docker system prune -af || true
+          sudo timeout 180s rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          sudo timeout 120s docker system prune -af || true
           df -h
 
       - name: Login to GHCR
@@ -335,17 +335,3 @@ jobs:
         if: ${{ steps.build.outputs.exit_code != '0' }}
         shell: bash
         run: exit 1
-
-
-
-
-
-
-
-
-
-
-
-
-
-
