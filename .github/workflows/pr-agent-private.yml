@@ -15,27 +15,32 @@ on:
       head_sha:
         description: Optional source head SHA for traceability
         required: false
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
 
 permissions:
   contents: read
+  pull-requests: write
+  issues: write
 
 concurrency:
-  group: private-pr-agent-${{ github.event.client_payload.source_repo || inputs.source_repo }}-${{ github.event.client_payload.pr_number || inputs.pr_number }}
+  group: private-pr-agent-${{ github.event_name == 'pull_request' && github.repository || github.event.client_payload.source_repo || inputs.source_repo }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.event.client_payload.pr_number || inputs.pr_number }}
   cancel-in-progress: true
 
 jobs:
   review:
-    name: Review private PR
+    name: Review PR
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
 
     env:
-      SOURCE_REPO: ${{ github.event.client_payload.source_repo || inputs.source_repo }}
-      PR_NUMBER: ${{ github.event.client_payload.pr_number || inputs.pr_number }}
-      PR_URL: https://github.com/${{ github.event.client_payload.source_repo || inputs.source_repo }}/pull/${{ github.event.client_payload.pr_number || inputs.pr_number }}
+      SOURCE_REPO: ${{ github.event_name == 'pull_request' && github.repository || github.event.client_payload.source_repo || inputs.source_repo }}
+      PR_NUMBER: ${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.event.client_payload.pr_number || inputs.pr_number }}
+      PR_URL: ${{ github.event_name == 'pull_request' && github.event.pull_request.html_url || format('https://github.com/{0}/pull/{1}', github.event.client_payload.source_repo || inputs.source_repo, github.event.client_payload.pr_number || inputs.pr_number) }}
 
     steps:
-      - name: Validate dispatch payload
+      - name: Validate PR payload
         shell: bash
         run: |
           set -euo pipefail
@@ -52,8 +57,18 @@ jobs:
               ;;
           esac
           echo "Review target: ${SOURCE_REPO}#${PR_NUMBER}"
+          echo "PR URL: ${PR_URL}"
+
+      - name: Checkout public PR
+        if: github.event_name == 'pull_request'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          path: source
+          persist-credentials: false
 
       - name: Checkout private source
+        if: github.event_name != 'pull_request'
         uses: actions/checkout@v4
         with:
           repository: ${{ env.SOURCE_REPO }}
@@ -75,7 +90,7 @@ jobs:
         working-directory: source
         shell: bash
         env:
-          GITHUB__USER_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
+          GITHUB__USER_TOKEN: ${{ github.event_name == 'pull_request' && github.token || secrets.PRIVATE_SOURCE_PAT }}
           OPENAI__KEY: ${{ secrets.CLIPROXY_API_KEY }}
           OPENAI__API_BASE: https://cliproxy.boxd.sh/v1
           config.model: gpt-5.5
@@ -88,7 +103,7 @@ jobs:
           set +x
           pr-agent --pr_url "$PR_URL" review
 
-      - name: Cleanup private source
+      - name: Cleanup checkout
         if: always()
         shell: bash
         run: |
@@ -96,4 +111,3 @@ jobs:
           rm -rf source
           rm -f ~/.git-credentials
           git config --global --unset-all credential.helper || true
-
