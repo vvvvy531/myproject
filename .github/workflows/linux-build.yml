@@ -58,7 +58,7 @@ jobs:
 
       - name: Prepare output directory
         shell: bash
-        run: mkdir -p dist .sccache-cache
+        run: mkdir -p dist .sccache-cache .build-cache-restore .build-cache-restore
 
       - name: Restore sccache compiler cache from private builds repo
         shell: bash
@@ -74,6 +74,23 @@ jobs:
             du -sh .sccache-cache || true
           else
             echo "No private sccache cache release yet: $cache_tag"
+          fi
+
+
+      - name: Restore UE build products cache from private builds repo
+        shell: bash
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.ARTIFACT_REPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          cache_tag="linux-build-cache-${{ runner.os }}"
+          mkdir -p .build-cache-restore
+          if gh release download "$cache_tag" -R "$ARTIFACT_REPO" -p ue-build-products.tar.zst -D .build-cache-restore --clobber; then
+            tar --zstd -xf .build-cache-restore/ue-build-products.tar.zst -C source || true
+            du -sh source/Binaries source/Intermediate source/Plugins/*/Binaries source/Plugins/*/Intermediate 2>/dev/null || true
+          else
+            echo "No private UE build-products cache release yet: $cache_tag"
           fi
 
       - name: Build Linux target in official UE container
@@ -188,6 +205,31 @@ jobs:
             gh release upload "$cache_tag" -R "$ARTIFACT_REPO" dist/sccache-cache.tar.zst dist/sccache-cache-size.txt --clobber
           fi
 
+
+      - name: Save UE build products cache to private builds repo
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.ARTIFACT_REPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          cache_tag="linux-build-cache-${{ runner.os }}"
+          mkdir -p dist
+          (
+            cd source
+            tar --zstd -cf ../dist/ue-build-products.tar.zst \
+              Binaries Intermediate Saved/UnrealBuildTool \
+              Plugins/*/Binaries Plugins/*/Intermediate \
+              2>/dev/null || true
+          )
+          du -sh dist/ue-build-products.tar.zst > dist/ue-build-products-size.txt 2>&1 || true
+          if [[ -s dist/ue-build-products.tar.zst ]]; then
+            gh release view "$cache_tag" -R "$ARTIFACT_REPO" >/dev/null 2>&1 \
+              || gh release create "$cache_tag" -R "$ARTIFACT_REPO" --title "$cache_tag UE build products" --notes "Rolling UE Binaries/Intermediate cache for Linux CI" --latest=false
+            gh release upload "$cache_tag" -R "$ARTIFACT_REPO" dist/ue-build-products.tar.zst dist/ue-build-products-size.txt --clobber
+          fi
+
       - name: Write manifest
         if: always()
         shell: bash
@@ -230,6 +272,7 @@ jobs:
         if: ${{ steps.build.outputs.exit_code != '0' }}
         shell: bash
         run: exit 1
+
 
 
 
