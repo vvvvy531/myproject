@@ -166,7 +166,7 @@ jobs:
                 curl -fsSL "https://github.com/ispc/ispc/releases/download/${ispc_version}/ispc-${ispc_version}-linux.tar.gz" -o /tmp/ispc.tar.gz
                 tar -xzf /tmp/ispc.tar.gz -C /tmp
                 mkdir -p /home/ue4/UnrealEngine/Engine/Source/ThirdParty/Intel/ISPC/bin/Linux
-                ln -sf "/tmp/ispc-${ispc_version}-linux/bin/ispc" /home/ue4/UnrealEngine/Engine/Source/ThirdParty/Intel/ISPC/bin/Linux/ispc
+                install -m 755 "/tmp/ispc-${ispc_version}-linux/bin/ispc" /home/ue4/UnrealEngine/Engine/Source/ThirdParty/Intel/ISPC/bin/Linux/ispc
               fi
               # UBT tracks tool mtimes; normalize generated/installed tools so fresh containers do not invalidate makefiles.
               touch -d "2000-01-01 00:00:00 UTC" /home/ue4/UnrealEngine/Engine/Source/ThirdParty/Intel/ISPC/bin/Linux/ispc || true
