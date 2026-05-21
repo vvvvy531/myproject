@@ -143,9 +143,9 @@ jobs:
                 for compiler in clang clang++; do
                   if [[ -e "$toolchain_bin/$compiler" && ! -e "$toolchain_bin/$compiler.real" ]]; then
                     mv "$toolchain_bin/$compiler" "$toolchain_bin/$compiler.real"
-                    printf "%s\n" "#!/usr/bin/env bash" "exec /usr/local/bin/sccache \"\$0.real\" \"\$@\"" > "$toolchain_bin/$compiler"
+                    printf "%s\n" '#!/usr/bin/env python3' 'import os, shlex, sys' 'real = sys.argv[0] + ".real"' 'expanded = []' 'for arg in sys.argv[1:]:' '    if arg.startswith("@") and len(arg) > 1:' '        try:' '            with open(arg[1:], "r", encoding="utf-8") as fh:' '                expanded.extend(shlex.split(fh.read(), posix=True))' '            continue' '        except Exception:' '            pass' '    expanded.append(arg)' 'os.execv("/usr/local/bin/sccache", ["sccache", real] + expanded)' > "$toolchain_bin/$compiler"
                     chmod +x "$toolchain_bin/$compiler"
-                    echo "wrapped $toolchain_bin/$compiler -> sccache"
+                    echo "wrapped $toolchain_bin/$compiler -> sccache with rsp expansion"
                   fi
                 done
               fi
@@ -228,5 +228,6 @@ jobs:
         if: ${{ steps.build.outputs.exit_code != '0' }}
         shell: bash
         run: exit 1
+
 
 
