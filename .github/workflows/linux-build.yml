@@ -252,17 +252,21 @@ jobs:
 
       - name: Publish private release with logs
         if: always()
-        uses: softprops/action-gh-release@v2
-        with:
-          repository: ${{ env.ARTIFACT_REPO }}
-          token: ${{ secrets.ARTIFACT_REPO_TOKEN }}
-          tag_name: linux-${{ github.run_number }}
-          name: Linux build ${{ github.run_number }}
-          body: |
-            Source: `${{ env.SOURCE_REPO }}`
-            Run: `${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}`
-            Build exit code: `${{ steps.build.outputs.exit_code }}`
-          files: |
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.ARTIFACT_REPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="linux-${GITHUB_RUN_NUMBER}"
+          body_file="dist/release-body.md"
+          cat > "$body_file" <<EOF
+          Source: `${SOURCE_REPO}`
+          Run: `${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}`
+          Build exit code: `${{ steps.build.outputs.exit_code }}`
+          EOF
+          gh release view "$tag" -R "$ARTIFACT_REPO" >/dev/null 2>&1 \
+            || gh release create "$tag" -R "$ARTIFACT_REPO" --title "Linux build ${GITHUB_RUN_NUMBER}" --notes-file "$body_file" --latest=false
+          files=(
             dist/MyProject-Linux-*.tar.gz
             dist/manifest.json
             dist/build.log
@@ -271,14 +275,25 @@ jobs:
             dist/ubt.log
             dist/intermediate-diagnostics-files.txt
             dist/intermediate-diagnostics.tar.gz
-          fail_on_unmatched_files: false
-          draft: false
-          overwrite_files: true
+          )
+          for file in "${files[@]}"; do
+            [[ -f "$file" && -s "$file" ]] || continue
+            for attempt in 1 2 3; do
+              if gh release upload "$tag" -R "$ARTIFACT_REPO" "$file" --clobber; then
+                break
+              fi
+              if [[ "$attempt" == "3" ]]; then
+                exit 1
+              fi
+              sleep $((attempt * 10))
+            done
+          done
 
       - name: Fail job if build failed
         if: ${{ steps.build.outputs.exit_code != '0' }}
         shell: bash
         run: exit 1
+
 
 
 
