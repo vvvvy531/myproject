@@ -90,7 +90,7 @@ jobs:
           repository: ${{ env.SOURCE_REPO }}
           token: ${{ secrets.PRIVATE_SOURCE_PAT }}
           fetch-depth: 0
-          lfs: true
+          lfs: false
           submodules: recursive
           path: source
           persist-credentials: false
