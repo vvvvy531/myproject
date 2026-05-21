@@ -3,12 +3,24 @@ name: Private Source PR Agent
 on:
   repository_dispatch:
     types: [private-pr-agent]
+  workflow_dispatch:
+    inputs:
+      source_repo:
+        description: Private source repo, e.g. vvvvy531/myproject-source
+        required: true
+        default: vvvvy531/myproject-source
+      pr_number:
+        description: Private source PR number
+        required: true
+      head_sha:
+        description: Optional source head SHA for traceability
+        required: false
 
 permissions:
   contents: read
 
 concurrency:
-  group: private-pr-agent-${{ github.event.client_payload.source_repo }}-${{ github.event.client_payload.pr_number }}
+  group: private-pr-agent-${{ github.event.client_payload.source_repo || inputs.source_repo }}-${{ github.event.client_payload.pr_number || inputs.pr_number }}
   cancel-in-progress: true
 
 jobs:
@@ -18,9 +30,9 @@ jobs:
     timeout-minutes: 30
 
     env:
-      SOURCE_REPO: ${{ github.event.client_payload.source_repo }}
-      PR_NUMBER: ${{ github.event.client_payload.pr_number }}
-      PR_URL: https://github.com/${{ github.event.client_payload.source_repo }}/pull/${{ github.event.client_payload.pr_number }}
+      SOURCE_REPO: ${{ github.event.client_payload.source_repo || inputs.source_repo }}
+      PR_NUMBER: ${{ github.event.client_payload.pr_number || inputs.pr_number }}
+      PR_URL: https://github.com/${{ github.event.client_payload.source_repo || inputs.source_repo }}/pull/${{ github.event.client_payload.pr_number || inputs.pr_number }}
 
     steps:
       - name: Validate dispatch payload
@@ -84,3 +96,4 @@ jobs:
           rm -rf source
           rm -f ~/.git-credentials
           git config --global --unset-all credential.helper || true
+
