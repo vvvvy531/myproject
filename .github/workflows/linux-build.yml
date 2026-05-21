@@ -90,8 +90,23 @@ jobs:
           cache_tag="linux-build-cache-${{ runner.os }}"
           mkdir -p .build-cache-restore
           if gh release download "$cache_tag" -R "$ARTIFACT_REPO" -p ue-build-products.tar.zst -D .build-cache-restore --clobber; then
+            echo "== restored UE cache archive =="
+            ls -lh .build-cache-restore/ue-build-products.tar.zst || true
             tar --zstd -xf .build-cache-restore/ue-build-products.tar.zst -C source || true
-            du -sh source/Binaries source/Intermediate source/Plugins/*/Binaries source/Plugins/*/Intermediate 2>/dev/null || true
+            echo "== restored UE cache sizes =="
+            du -sh source/Binaries source/Intermediate source/Saved/UnrealBuildTool source/Plugins/*/Binaries source/Plugins/*/Intermediate 2>/dev/null || true
+            echo "== restored UE cache oldest/newest before mtime fix =="
+            stat source/MyProject.uproject || true
+            find source/Intermediate source/Binaries source/Saved/UnrealBuildTool source/Plugins -type f 2>/dev/null | head -2000 | xargs -r stat -c '%Y %n' 2>/dev/null | sort -n | { head -10; tail -10; } || true
+            echo "== touch restored UE build products newer than checkout =="
+            find source/Binaries source/Intermediate source/Saved/UnrealBuildTool source/Plugins \
+              \( -path '*/Binaries/*' -o -path '*/Intermediate/*' -o -path '*/Saved/UnrealBuildTool/*' \) \
+              -exec touch {} + 2>/dev/null || true
+            find source/Binaries source/Intermediate source/Saved/UnrealBuildTool source/Plugins \
+              \( -name Binaries -o -name Intermediate -o -path '*/Saved/UnrealBuildTool' \) \
+              -type d -exec touch {} + 2>/dev/null || true
+            echo "== restored UE cache newest after mtime fix =="
+            find source/Intermediate source/Binaries source/Saved/UnrealBuildTool source/Plugins -type f 2>/dev/null | head -2000 | xargs -r stat -c '%Y %n' 2>/dev/null | sort -n | tail -20 || true
           else
             echo "No private UE build-products cache release yet: $cache_tag"
           fi
@@ -293,6 +308,7 @@ jobs:
         if: ${{ steps.build.outputs.exit_code != '0' }}
         shell: bash
         run: exit 1
+
 
 
 
