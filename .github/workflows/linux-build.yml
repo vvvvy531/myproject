@@ -2,8 +2,18 @@ name: Private Source Linux Build
 
 "on":
   workflow_dispatch:
+    inputs:
+      static_analysis:
+        description: Run weekly static analysis job instead of Linux build
+        required: false
+        default: "false"
+        type: choice
+        options: ["false", "true"]
   repository_dispatch:
     types: [linux-build]
+  schedule:
+    # Weekly static analysis: Monday 03:00 UTC / 11:00 Beijing time.
+    - cron: '0 3 * * 1'
 
 concurrency:
   group: linux-build-${{ github.ref }}
@@ -12,6 +22,7 @@ concurrency:
 permissions:
   contents: read
   packages: read
+  actions: read
 
 env:
   SOURCE_REPO: vvvvy531/myproject-source
@@ -25,6 +36,7 @@ jobs:
     name: UE 5.7.4 Linux smoke build
     runs-on: ubuntu-latest
     timeout-minutes: 120
+    if: github.event_name != 'schedule' && (github.event_name != 'workflow_dispatch' || inputs.static_analysis != 'true')
     steps:
       - name: Free hosted runner disk
         shell: bash
@@ -335,3 +347,159 @@ jobs:
         if: ${{ steps.build.outputs.exit_code != '0' }}
         shell: bash
         run: exit 1
+
+  static-analysis:
+    name: Weekly SonarCloud and CodeQL private report
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.static_analysis == 'true')
+    env:
+      ANALYSIS_TAG: static-analysis-${{ github.run_number }}
+      REPORT_DIR: analysis-report
+    steps:
+      - name: Checkout private source
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.SOURCE_REPO }}
+          token: ${{ secrets.SOURCE_REPO_TOKEN }}
+          fetch-depth: 0
+          lfs: true
+          submodules: recursive
+          path: source
+          persist-credentials: false
+
+      - name: Prepare report directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$REPORT_DIR"
+          git -C source rev-parse HEAD > "$REPORT_DIR/source-sha.txt"
+
+      - name: SonarCloud scan
+        uses: SonarSource/sonarqube-scan-action@v5
+        continue-on-error: true
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        with:
+          projectBaseDir: source
+          args: >
+            -Dsonar.organization=${{ vars.SONAR_ORGANIZATION }}
+            -Dsonar.projectKey=${{ vars.SONAR_PROJECT_KEY }}
+            -Dsonar.sources=.
+            -Dsonar.exclusions=Intermediate/**,Saved/**,Binaries/**,DerivedDataCache/**,Plugins/**/Intermediate/**,Plugins/**/Binaries/**
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: cpp
+          source-root: source
+          build-mode: none
+          queries: security-and-quality
+
+      - name: Run CodeQL analyze to private SARIF
+        uses: github/codeql-action/analyze@v4
+        with:
+          upload: false
+          output: ${{ env.REPORT_DIR }}/codeql-sarif
+          category: weekly-private-source
+
+      - name: Summarize CodeQL SARIF
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, pathlib, collections
+          sarif_files = sorted(pathlib.Path('analysis-report/codeql-sarif').glob('*.sarif'))
+          sarif = sarif_files[0] if sarif_files else pathlib.Path('analysis-report/codeql-results.sarif')
+          out = pathlib.Path('analysis-report/codeql-summary.md')
+          data = json.loads(sarif.read_text(encoding='utf-8')) if sarif.exists() else {}
+          if sarif.exists():
+              pathlib.Path('analysis-report/codeql-results.sarif').write_text(sarif.read_text(encoding='utf-8'), encoding='utf-8')
+          runs = data.get('runs', [])
+          results = []
+          rules = {}
+          for run in runs:
+              tool = run.get('tool', {}).get('driver', {})
+              for rule in tool.get('rules', []) or []:
+                  rid = rule.get('id')
+                  if rid:
+                      rules[rid] = rule.get('shortDescription', {}).get('text') or rule.get('name') or rid
+              results.extend(run.get('results', []) or [])
+          counts = collections.Counter(r.get('level', 'warning') for r in results)
+          lines = [
+              '# Weekly Static Analysis', '',
+              f'- CodeQL findings: {len(results)}',
+              f'- Error: {counts.get("error", 0)}',
+              f'- Warning: {counts.get("warning", 0)}',
+              f'- Note: {counts.get("note", 0)}', '',
+              '## Top findings', ''
+          ]
+          for r in results[:25]:
+              rid = r.get('ruleId', '<unknown>')
+              msg = r.get('message', {}).get('text', '').replace('\n', ' ')[:240]
+              loc = ''
+              try:
+                  ploc = r['locations'][0]['physicalLocation']
+                  uri = ploc['artifactLocation'].get('uri','')
+                  line = ploc.get('region',{}).get('startLine','')
+                  loc = f' `{uri}:{line}`'
+              except Exception:
+                  pass
+              lines.append(f'- `{rid}` {rules.get(rid, rid)}{loc}: {msg}')
+          out.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+          pathlib.Path('analysis-report/codeql-count.txt').write_text(str(len(results)), encoding='utf-8')
+          PY
+
+      - name: Publish SARIF release to private builds repo
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.ARTIFACT_REPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release create "$ANALYSIS_TAG" \
+            -R "$ARTIFACT_REPO" \
+            --title "$ANALYSIS_TAG" \
+            --notes "Weekly static analysis for $SOURCE_REPO at $(cat $REPORT_DIR/source-sha.txt). Public run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            || true
+          gh release upload "$ANALYSIS_TAG" \
+            -R "$ARTIFACT_REPO" \
+            "$REPORT_DIR/codeql-results.sarif" \
+            "$REPORT_DIR/codeql-summary.md" \
+            "$REPORT_DIR/source-sha.txt" \
+            --clobber
+
+      - name: Create or update private issue summary
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.ARTIFACT_REPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          issue_title='Weekly Static Analysis'
+          source_sha="$(cat "$REPORT_DIR/source-sha.txt")"
+          release_url="https://github.com/${ARTIFACT_REPO}/releases/tag/${ANALYSIS_TAG}"
+          run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          sonar_url="https://sonarcloud.io/project/overview?id=${{ vars.SONAR_PROJECT_KEY }}"
+          summary="$(cat "$REPORT_DIR/codeql-summary.md")"
+          body_file="$REPORT_DIR/issue-body.md"
+          cat > "$body_file" <<EOF
+          # Weekly Static Analysis
+
+          - Public run: ${run_url}
+          - Source repo: ${SOURCE_REPO}
+          - Source commit: ${source_sha}
+          - Private release assets: ${release_url}
+          - SonarCloud: ${sonar_url}
+
+          ${summary}
+          EOF
+          issue_number="$(gh issue list -R "$ARTIFACT_REPO" --state all --search "$issue_title in:title" --json number,title --jq '.[] | select(.title == "Weekly Static Analysis") | .number' | head -n 1)"
+          if [[ -z "$issue_number" ]]; then
+            issue_number="$(gh issue create -R "$ARTIFACT_REPO" --title "$issue_title" --body-file "$body_file" --json number --jq .number)"
+          else
+            gh issue edit "$issue_number" -R "$ARTIFACT_REPO" --body-file "$body_file"
+            gh issue reopen "$issue_number" -R "$ARTIFACT_REPO" || true
+          fi
+          if [[ "$(cat "$REPORT_DIR/codeql-count.txt")" == "0" ]]; then
+            gh issue comment "$issue_number" -R "$ARTIFACT_REPO" --body "Weekly static analysis found 0 CodeQL findings for ${source_sha}. Release: ${release_url}"
+            gh issue close "$issue_number" -R "$ARTIFACT_REPO" || true
+          fi
