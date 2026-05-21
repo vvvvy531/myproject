@@ -38,6 +38,7 @@ jobs:
       SOURCE_REPO: ${{ github.event_name == 'pull_request' && github.repository || github.event.client_payload.source_repo || inputs.source_repo }}
       PR_NUMBER: ${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.event.client_payload.pr_number || inputs.pr_number }}
       PR_URL: ${{ github.event_name == 'pull_request' && github.event.pull_request.html_url || format('https://github.com/{0}/pull/{1}', github.event.client_payload.source_repo || inputs.source_repo, github.event.client_payload.pr_number || inputs.pr_number) }}
+      HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.event.client_payload.head_sha || inputs.head_sha }}
 
     steps:
       - name: Validate PR payload
@@ -58,6 +59,21 @@ jobs:
           esac
           echo "Review target: ${SOURCE_REPO}#${PR_NUMBER}"
           echo "PR URL: ${PR_URL}"
+
+
+      - name: Mark private PR-Agent status pending
+        if: github.event_name != 'pull_request' && env.HEAD_SHA != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set +x
+          gh api "repos/${SOURCE_REPO}/statuses/${HEAD_SHA}" \
+            -f state=pending \
+            -f context="Public PR-Agent Review" \
+            -f description="Review running in public CI" \
+            -f target_url="$RUN_URL"
 
       - name: Checkout public PR
         if: github.event_name == 'pull_request'
@@ -102,6 +118,35 @@ jobs:
         run: |
           set +x
           pr-agent --pr_url "$PR_URL" review
+
+
+      - name: Mark private PR-Agent status success
+        if: success() && github.event_name != 'pull_request' && env.HEAD_SHA != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set +x
+          gh api "repos/${SOURCE_REPO}/statuses/${HEAD_SHA}" \
+            -f state=success \
+            -f context="Public PR-Agent Review" \
+            -f description="Review completed" \
+            -f target_url="$RUN_URL"
+
+      - name: Mark private PR-Agent status failure
+        if: failure() && github.event_name != 'pull_request' && env.HEAD_SHA != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set +x
+          gh api "repos/${SOURCE_REPO}/statuses/${HEAD_SHA}" \
+            -f state=failure \
+            -f context="Public PR-Agent Review" \
+            -f description="Review failed" \
+            -f target_url="$RUN_URL"
 
       - name: Cleanup checkout
         if: always()
