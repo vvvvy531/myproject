@@ -61,27 +61,8 @@ jobs:
         run: mkdir -p dist .sccache-cache .build-cache-restore .build-cache-restore
 
 
-      - name: Restore sccache from GitHub Actions cache
-        uses: actions/cache@v5
-        with:
-          path: .sccache-cache
-          key: sccache-${{ runner.os }}-${{ github.sha }}
-          restore-keys: |
-            sccache-${{ runner.os }}-
-
-      - name: Restore UE build products from GitHub Actions cache
-        uses: actions/cache@v5
-        with:
-          path: |
-            source/Binaries
-            source/Intermediate
-            source/Saved/UnrealBuildTool
-            source/Plugins/*/Binaries
-            source/Plugins/*/Intermediate
-          key: ue-build-products-${{ runner.os }}-${{ github.sha }}
-          restore-keys: |
-            ue-build-products-${{ runner.os }}-
-
+      # Public actions/cache intentionally avoids private source build products.
+      # Compiler/object caches live only in private release assets requiring ARTIFACT_REPO_TOKEN.
       - name: Restore sccache compiler cache from private builds repo
         shell: bash
         env:
@@ -293,6 +274,7 @@ jobs:
         if: ${{ steps.build.outputs.exit_code != '0' }}
         shell: bash
         run: exit 1
+
 
 
 
