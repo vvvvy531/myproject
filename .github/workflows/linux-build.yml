@@ -214,7 +214,7 @@ jobs:
             Run: `${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}`
             Build exit code: `${{ steps.build.outputs.exit_code }}`
           files: |
-            dist/*.tar.gz
+            dist/MyProject-Linux-*.tar.gz
             dist/manifest.json
             dist/build.log
             dist/sccache-stats.txt
@@ -230,6 +230,7 @@ jobs:
         if: ${{ steps.build.outputs.exit_code != '0' }}
         shell: bash
         run: exit 1
+
 
 
 
