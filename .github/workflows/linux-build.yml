@@ -60,6 +60,28 @@ jobs:
         shell: bash
         run: mkdir -p dist .sccache-cache .build-cache-restore .build-cache-restore
 
+
+      - name: Restore sccache from GitHub Actions cache
+        uses: actions/cache@v5
+        with:
+          path: .sccache-cache
+          key: sccache-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            sccache-${{ runner.os }}-
+
+      - name: Restore UE build products from GitHub Actions cache
+        uses: actions/cache@v5
+        with:
+          path: |
+            source/Binaries
+            source/Intermediate
+            source/Saved/UnrealBuildTool
+            source/Plugins/*/Binaries
+            source/Plugins/*/Intermediate
+          key: ue-build-products-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            ue-build-products-${{ runner.os }}-
+
       - name: Restore sccache compiler cache from private builds repo
         shell: bash
         env:
@@ -67,7 +89,6 @@ jobs:
         run: |
           set -euo pipefail
           cache_tag="sccache-${{ runner.os }}"
-          rm -rf .sccache-cache
           mkdir -p .sccache-cache .cache-restore
           if gh release download "$cache_tag" -R "$ARTIFACT_REPO" -p sccache-cache.tar.zst -D .cache-restore --clobber; then
             tar --zstd -xf .cache-restore/sccache-cache.tar.zst -C .sccache-cache || true
@@ -272,6 +293,7 @@ jobs:
         if: ${{ steps.build.outputs.exit_code != '0' }}
         shell: bash
         run: exit 1
+
 
 
 
