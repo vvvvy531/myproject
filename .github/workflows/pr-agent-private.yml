@@ -1,0 +1,86 @@
+name: Private Source PR Agent
+
+on:
+  repository_dispatch:
+    types: [private-pr-agent]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: private-pr-agent-${{ github.event.client_payload.source_repo }}-${{ github.event.client_payload.pr_number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    name: Review private PR
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      SOURCE_REPO: ${{ github.event.client_payload.source_repo }}
+      PR_NUMBER: ${{ github.event.client_payload.pr_number }}
+      PR_URL: https://github.com/${{ github.event.client_payload.source_repo }}/pull/${{ github.event.client_payload.pr_number }}
+
+    steps:
+      - name: Validate dispatch payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$SOURCE_REPO" in
+            ""|*" "*|*".."*|*"//"*)
+              echo "Invalid source_repo payload" >&2
+              exit 1
+              ;;
+          esac
+          case "$PR_NUMBER" in
+            ''|*[!0-9]*)
+              echo "Invalid pr_number payload" >&2
+              exit 1
+              ;;
+          esac
+          echo "Review target: ${SOURCE_REPO}#${PR_NUMBER}"
+
+      - name: Checkout private source
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.SOURCE_REPO }}
+          token: ${{ secrets.PRIVATE_SOURCE_PAT }}
+          fetch-depth: 0
+          lfs: true
+          submodules: recursive
+          path: source
+          persist-credentials: false
+
+      - name: Install PR-Agent
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install --upgrade pip
+          python3 -m pip install pr-agent
+
+      - name: Run PR-Agent review
+        working-directory: source
+        shell: bash
+        env:
+          GITHUB__USER_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
+          OPENAI__KEY: ${{ secrets.CLIPROXY_API_KEY }}
+          OPENAI__API_BASE: https://cliproxy.boxd.sh/v1
+          config.model: gpt-5.5
+          config.fallback_models: '["gpt-5.5"]'
+          config.custom_model_max_tokens: '128000'
+          config.ai_timeout: '300'
+          config.verbosity_level: '1'
+          pr_reviewer.extra_instructions: Focus on Linux build safety, Unreal Engine build issues, CI/CD, release artifacts, shell commands, secrets leakage, permissions, and supply-chain risks. Do not repeat large code blocks.
+        run: |
+          set +x
+          pr-agent --pr_url "$PR_URL" review
+
+      - name: Cleanup private source
+        if: always()
+        shell: bash
+        run: |
+          set +x
+          rm -rf source
+          rm -f ~/.git-credentials
+          git config --global --unset-all credential.helper || true
