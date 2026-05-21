@@ -60,6 +60,21 @@ jobs:
         shell: bash
         run: mkdir -p dist .sccache-cache .build-cache-restore .build-cache-restore
 
+      - name: Normalize private source file mtimes for UBT incremental cache
+        shell: bash
+        working-directory: source
+        run: |
+          set -euo pipefail
+          echo "Normalize tracked source mtimes to each file's last git commit time"
+          git ls-files -z | while IFS= read -r -d '' file; do
+            ts="$(git log -1 --format=%ct -- "$file" 2>/dev/null || true)"
+            if [[ -n "$ts" ]]; then
+              touch -d "@$ts" "$file" || true
+            fi
+          done
+          stat MyProject.uproject Source/MyProject.Target.cs Source/MyProject/MyProject.Build.cs || true
+
+
 
       # Public actions/cache intentionally avoids private source build products.
       # Compiler/object caches live only in private release assets requiring ARTIFACT_REPO_TOKEN.
