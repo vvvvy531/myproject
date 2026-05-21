@@ -269,8 +269,9 @@ jobs:
             echo "object_count=$(grep -c '\.o$' ../dist/ue-build-products-files.txt || true)" > ../dist/ue-build-products-size.txt
             echo "file_count=$(wc -l < ../dist/ue-build-products-files.txt)" >> ../dist/ue-build-products-size.txt
             grep '\.o$' ../dist/ue-build-products-files.txt | head -50 > ../dist/ue-build-products-object-sample.txt || true
-            tar --zstd -cf ../dist/ue-build-products.tar.zst -T ../dist/ue-build-products-files.txt 2>/dev/null || true
+            sudo tar --zstd -cf ../dist/ue-build-products.tar.zst -T ../dist/ue-build-products-files.txt 2>/dev/null || true
           )
+          sudo chown "$USER:$USER" dist/ue-build-products.tar.zst 2>/dev/null || true
           du -sh dist/ue-build-products.tar.zst >> dist/ue-build-products-size.txt 2>&1 || true
           if [[ -s dist/ue-build-products.tar.zst ]]; then
             gh release view "$cache_tag" -R "$ARTIFACT_REPO" >/dev/null 2>&1 \
@@ -334,6 +335,7 @@ jobs:
         if: ${{ steps.build.outputs.exit_code != '0' }}
         shell: bash
         run: exit 1
+
 
 
 
