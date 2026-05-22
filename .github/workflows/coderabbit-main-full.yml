@@ -4,9 +4,9 @@ on:
   repository_dispatch:
     types: [coderabbit-main-full]
   schedule:
-    # Weekly full-history CodeRabbit scan: Sunday 18:37 UTC / Monday 02:37 Beijing time.
+    # Hourly full-history CodeRabbit scan at minute 37.
     # Schedule must live in this public default-branch workflow; private trigger schedules do not run until merged to the private default branch.
-    - cron: '37 18 * * 0'
+    - cron: '37 * * * *'
   workflow_dispatch:
     inputs:
       reset:
@@ -334,3 +334,4 @@ jobs:
           rm -rf source "$HOME/.coderabbit" "$REPORT_DIR"
           rm -f ~/.git-credentials
           git config --global --unset-all credential.helper || true
+
