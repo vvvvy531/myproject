@@ -248,10 +248,13 @@ jobs:
             safe=dir.replace('/','_').replace('.','_')
             dir_findings=[f for f in findings if str(f.get('fileName','')).startswith(dir+'/') or str(f.get('fileName',''))==dir]
             counts=collections.Counter(f.get('severity','unknown') for f in dir_findings)
-            lines=[f'# CodeRabbit Review: {dir}','',f'- Public run: {__import__("os").environ.get("GITHUB_SERVER_URL")}/{__import__("os").environ.get("GITHUB_REPOSITORY")}/actions/runs/{__import__("os").environ.get("GITHUB_RUN_ID")}',f'- Source repo: {__import__("os").environ.get("SOURCE_REPO")}',f'- Directory: `{dir}`',f'- Status: {statuses.get(dir,"not-run")}',f'- Findings: {len(dir_findings)}',f'- Critical: {counts.get("critical",0)}',f'- Major: {counts.get("major",0)}',f'- Minor: {counts.get("minor",0)}','','## Error tail','']
             err=report/'errors'/(safe+'.stderr.tail')
-            if err.exists() and err.read_text(encoding='utf-8', errors='replace').strip():
-              lines += ['```text', err.read_text(encoding='utf-8', errors='replace')[-4000:], '```']
+            err_text=err.read_text(encoding='utf-8', errors='replace').strip() if err.exists() else ''
+            if not dir_findings and not err_text:
+              continue
+            lines=[f'# CodeRabbit Review: {dir}','',f'- Public run: {__import__("os").environ.get("GITHUB_SERVER_URL")}/{__import__("os").environ.get("GITHUB_REPOSITORY")}/actions/runs/{__import__("os").environ.get("GITHUB_RUN_ID")}',f'- Source repo: {__import__("os").environ.get("SOURCE_REPO")}',f'- Directory: `{dir}`',f'- Status: {statuses.get(dir,"not-run")}',f'- Findings: {len(dir_findings)}',f'- Critical: {counts.get("critical",0)}',f'- Major: {counts.get("major",0)}',f'- Minor: {counts.get("minor",0)}','','## Error tail','']
+            if err_text:
+              lines += ['```text', err_text[-4000:], '```']
             lines += ['', '## Findings', '']
             for f in dir_findings[:120]:
               msg=str(f.get('message') or f.get('title') or f.get('codegenInstructions') or '').replace('\n',' ')[:500]
@@ -263,6 +266,7 @@ jobs:
             safe="$(printf '%s' "$dir" | tr '/.' '___')"
             title="CodeRabbit Review: ${dir}"
             body_file="$REPORT_DIR/issue-bodies/${safe}.md"
+            [[ -s "$body_file" ]] || continue
             issue="$(TITLE="$title" gh issue list -R "$SOURCE_REPO" --state all --search "$title in:title" --json number,title --jq '.[] | select(.title == env.TITLE) | .number' | head -n 1)"
             if [[ -z "$issue" ]]; then
               gh issue create -R "$SOURCE_REPO" --title "$title" --body-file "$body_file" >/dev/null
