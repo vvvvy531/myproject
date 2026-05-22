@@ -28,7 +28,48 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
+      - name: Skip scheduled run if last full chunk was under 60 minutes ago
+        id: interval_guard
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" != "schedule" ]]; then
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          title='CodeRabbit Full Scan State'
+          issue="$(gh issue list -R "$SOURCE_REPO" --state all --search "$title in:title" --json number,title --jq '.[] | select(.title == "CodeRabbit Full Scan State") | .number' | head -n 1)"
+          if [[ -z "$issue" ]]; then
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          gh issue view "$issue" -R "$SOURCE_REPO" --json body --jq .body > /tmp/coderabbit-full-scan-state.md || true
+          last_epoch="$(python3 - <<'PY'
+          import json,re,pathlib,datetime
+          s=pathlib.Path('/tmp/coderabbit-full-scan-state.md').read_text(errors='ignore') if pathlib.Path('/tmp/coderabbit-full-scan-state.md').exists() else ''
+          m=re.search(r'```json\s*(\{.*?\})\s*```', s, re.S)
+          if not m:
+              print(0); raise SystemExit
+          ts=json.loads(m.group(1)).get('updated_at','')
+          try:
+              print(int(datetime.datetime.fromisoformat(ts.replace('Z','+00:00')).timestamp()))
+          except Exception:
+              print(0)
+          PY
+          )"
+          now_epoch="$(date -u +%s)"
+          age=$((now_epoch - last_epoch))
+          if (( last_epoch > 0 && age < 3600 )); then
+            echo "Last full chunk age ${age}s < 3600s; skip."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Checkout private source main
+        if: steps.interval_guard.outputs.skip != 'true'
         uses: actions/checkout@v4
         with:
           repository: ${{ env.SOURCE_REPO }}
@@ -41,6 +82,7 @@ jobs:
           persist-credentials: false
 
       - name: Install CodeRabbit CLI
+        if: steps.interval_guard.outputs.skip != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -49,6 +91,7 @@ jobs:
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Restore CodeRabbit auth
+        if: steps.interval_guard.outputs.skip != 'true'
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.LINUX_BUILDS_PAT }}
@@ -62,6 +105,7 @@ jobs:
           chmod 700 "$HOME/.coderabbit" || true
 
       - name: Determine full history range and chunk window
+        if: steps.interval_guard.outputs.skip != 'true'
         id: range
         shell: bash
         env:
@@ -117,6 +161,7 @@ jobs:
           printf '%s\n' full-root-to-head-window > "$REPORT_DIR/mode.txt"
 
       - name: Run CodeRabbit CLI full review chunk window
+        if: steps.interval_guard.outputs.skip != 'true'
         id: review
         shell: bash
         working-directory: source
@@ -142,7 +187,7 @@ jobs:
           exit "$failed"
 
       - name: Summarize findings
-        if: always()
+        if: always() && steps.interval_guard.outputs.skip != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -173,7 +218,7 @@ jobs:
           PY
 
       - name: Upsert full report issue in source repo
-        if: always()
+        if: always() && steps.interval_guard.outputs.skip != 'true'
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
@@ -194,7 +239,7 @@ jobs:
           if [[ -z "$issue" ]]; then gh issue create -R "$SOURCE_REPO" --title "$title" --body-file "$body_file" >/dev/null; else gh issue edit "$issue" -R "$SOURCE_REPO" --body-file "$body_file"; gh issue reopen "$issue" -R "$SOURCE_REPO" || true; fi
 
       - name: Update full scan state issue
-        if: success()
+        if: success() && steps.interval_guard.outputs.skip != 'true'
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
@@ -219,7 +264,7 @@ jobs:
           if [[ -z "$issue" ]]; then gh issue create -R "$SOURCE_REPO" --title "$title" --body-file "$body_file" >/dev/null; else gh issue edit "$issue" -R "$SOURCE_REPO" --body-file "$body_file"; gh issue reopen "$issue" -R "$SOURCE_REPO" || true; fi
 
       - name: Seed incremental state when full scan completes
-        if: success() && steps.range.outputs.end_index == steps.range.outputs.total_chunks
+        if: success() && steps.interval_guard.outputs.skip != 'true' && steps.range.outputs.end_index == steps.range.outputs.total_chunks
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
@@ -240,7 +285,7 @@ jobs:
           if [[ -z "$issue" ]]; then gh issue create -R "$SOURCE_REPO" --title "$title" --body-file "$body_file" >/dev/null; else gh issue edit "$issue" -R "$SOURCE_REPO" --body-file "$body_file"; gh issue reopen "$issue" -R "$SOURCE_REPO" || true; fi
 
       - name: Cleanup
-        if: always()
+        if: always() && steps.interval_guard.outputs.skip != 'true'
         shell: bash
         run: |
           set +x
