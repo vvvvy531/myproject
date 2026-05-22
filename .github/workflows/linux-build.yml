@@ -17,7 +17,7 @@ name: Private Source Linux Build
 
 concurrency:
   group: linux-build-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -34,11 +34,76 @@ env:
   SOURCE_SHA: ${{ github.event.client_payload.source_sha || '' }}
 
 jobs:
+  preflight-linux-build:
+    name: Skip when Linux build already running
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: github.event_name != 'schedule' && (github.event_name != 'workflow_dispatch' || inputs.static_analysis != 'true')
+    outputs:
+      should_run: ${{ steps.guard.outputs.should_run }}
+    steps:
+      - name: Detect active Linux build
+        id: guard
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WORKFLOW: Private Source Linux Build
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          active="$(gh run list --repo "$REPO" --workflow "$WORKFLOW" --limit 20 --json databaseId,status,url,createdAt \
+            --jq '.[] | select((.status == "in_progress" or .status == "queued" or .status == "pending") and (.databaseId != ${{ github.run_id }})) | "\(.databaseId)\t\(.status)\t\(.url)\t\(.createdAt)"' | head -n 1)"
+          if [[ -n "$active" ]]; then
+            echo "Existing Linux build active: $active"
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "active_build<<EOF"
+              echo "$active"
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+          else
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Report skipped Linux build to private source issues
+        if: steps.guard.outputs.should_run == 'false'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.SOURCE_REPO_TOKEN }}
+          SOURCE_REPO: ${{ env.SOURCE_REPO }}
+          SOURCE_REF: ${{ env.SOURCE_REF }}
+          SOURCE_SHA: ${{ env.SOURCE_SHA }}
+          ACTIVE_BUILD: ${{ steps.guard.outputs.active_build }}
+        run: |
+          set -euo pipefail
+          title="CI: Linux build skipped because another build is active"
+          body="/tmp/linux-build-skip.md"
+          cat > "$body" <<EOF
+          # Linux build skipped
+
+          A new Linux build request was skipped because another Private Source Linux Build is already active.
+
+          - Source ref: ${SOURCE_REF}
+          - Source sha: ${SOURCE_SHA:-unknown}
+          - Active build: ${ACTIVE_BUILD}
+          - Skipped run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+          - Time: $(date -u +%FT%TZ)
+
+          Policy: keep one cloud UE Linux build at a time; do not cancel active compile/review runs.
+          EOF
+          issue="$(gh issue list -R "$SOURCE_REPO" --state open --search "$title in:title" --json number,title --jq '.[] | select(.title == "CI: Linux build skipped because another build is active") | .number' | head -n 1)"
+          if [[ -z "$issue" ]]; then
+            gh issue create -R "$SOURCE_REPO" --title "$title" --body-file "$body" >/dev/null
+          else
+            gh issue comment "$issue" -R "$SOURCE_REPO" --body-file "$body" >/dev/null
+          fi
+
   build-linux:
     name: UE 5.7.4 Linux smoke build
     runs-on: ubuntu-latest
     timeout-minutes: 120
-    if: github.event_name != 'schedule' && (github.event_name != 'workflow_dispatch' || inputs.static_analysis != 'true')
+    needs: preflight-linux-build
+    if: needs.preflight-linux-build.outputs.should_run == 'true'
     steps:
       - name: Free hosted runner disk
         shell: bash
