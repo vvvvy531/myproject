@@ -263,7 +263,7 @@ jobs:
             safe="$(printf '%s' "$dir" | tr '/.' '___')"
             title="CodeRabbit Review: ${dir}"
             body_file="$REPORT_DIR/issue-bodies/${safe}.md"
-            issue="$(gh issue list -R "$SOURCE_REPO" --state all --search "$title in:title" --json number,title --jq --arg t "$title" '.[] | select(.title == $t) | .number' | head -n 1)"
+            issue="$(TITLE="$title" gh issue list -R "$SOURCE_REPO" --state all --search "$title in:title" --json number,title --jq '.[] | select(.title == env.TITLE) | .number' | head -n 1)"
             if [[ -z "$issue" ]]; then
               gh issue create -R "$SOURCE_REPO" --title "$title" --body-file "$body_file" >/dev/null
             else
