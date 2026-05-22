@@ -230,11 +230,27 @@ jobs:
               cp /home/ue4/.config/Epic/UnrealBuildTool/Log.txt ../dist/ubt.log 2>/dev/null || true
               find Intermediate -type f \( -name "*.log" -o -name "*.txt" -o -name "*.err" -o -name "*.response" -o -name "*.rsp" \) -print > ../dist/intermediate-diagnostics-files.txt 2>/dev/null || true
               tar -czf ../dist/intermediate-diagnostics.tar.gz -T ../dist/intermediate-diagnostics-files.txt 2>/dev/null || true
-              tar -czf "../dist/MyProject-Linux-${GITHUB_RUN_NUMBER:-0}.tar.gz" Binaries Saved Intermediate/Build Plugins/*/Binaries Plugins/*/Intermediate 2>/dev/null || true
+              : > ../dist/package-files.txt
+              for path in Binaries Saved Intermediate/Build Plugins; do
+                [[ -e "$path" ]] || continue
+                if [[ "$path" == "Plugins" ]]; then
+                  find Plugins -type f \( -path '*/Binaries/*' -o -path '*/Intermediate/*' \) -print >> ../dist/package-files.txt
+                else
+                  find "$path" -type f -print >> ../dist/package-files.txt
+                fi
+              done
+              if [[ -s ../dist/package-files.txt ]]; then
+                tar -czf "../dist/MyProject-Linux-${GITHUB_RUN_NUMBER:-0}.tar.gz" -T ../dist/package-files.txt
+              fi
+              [[ -n "${code:-}" ]] || code=0
               printf "%s\n" "$code" > ../dist/build-exit-code.txt
               exit 0
             '
-          code="$(cat dist/build-exit-code.txt 2>/dev/null || echo 1)"
+          code="$(cat dist/build-exit-code.txt 2>/dev/null || true)"
+          if [[ -z "$code" ]]; then
+            if grep -q "Result: Failed" dist/build.log 2>/dev/null; then code=1; else code=0; fi
+            printf "%s\n" "$code" > dist/build-exit-code.txt
+          fi
           echo "exit_code=$code" >> "$GITHUB_OUTPUT"
 
       - name: Save sccache compiler cache to private builds repo
@@ -296,7 +312,9 @@ jobs:
         shell: bash
         run: |
           build_exit_code="${{ steps.build.outputs.exit_code }}"
-          [[ -n "$build_exit_code" ]] || build_exit_code="$(cat dist/build-exit-code.txt 2>/dev/null || echo 1)"
+          [[ -n "$build_exit_code" ]] || build_exit_code="$(cat dist/build-exit-code.txt 2>/dev/null || true)"
+          [[ -n "$build_exit_code" ]] || build_exit_code=1
+          printf "%s\n" "$build_exit_code" > dist/build-exit-code.txt
           BUILD_EXIT_CODE="$build_exit_code" python3 -c 'import json, os; json.dump({"sourceRepo": os.environ["SOURCE_REPO"], "runId": os.environ["GITHUB_RUN_ID"], "runNumber": os.environ["GITHUB_RUN_NUMBER"], "target": os.environ["TARGET_NAME"], "platform": "Linux", "configuration": "Development", "buildExitCode": os.environ["BUILD_EXIT_CODE"]}, open("dist/manifest.json", "w", encoding="utf-8"), indent=2)'
 
       - name: Drop empty artifacts
