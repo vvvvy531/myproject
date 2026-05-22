@@ -28,24 +28,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - name: Skip automated run while CodeRabbit issues are open
+      - name: Initialize run guard
         id: interval_guard
         shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
         run: |
-          set -euo pipefail
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          open_count="$(gh issue list -R "$SOURCE_REPO" --state open --json title --jq '[.[] | select(.title == "CodeRabbit Full Main History Review" or .title == "CodeRabbit Main All Directories Review")] | length')"
-          if (( open_count > 0 )); then
-            echo "Open CodeRabbit report issue exists; skip automated run."
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-          fi
+          echo "skip=false" >> "$GITHUB_OUTPUT"
 
       - name: Checkout private source main
         if: steps.interval_guard.outputs.skip != 'true'
@@ -139,10 +126,25 @@ jobs:
           fi
           total="${#dirs[@]}"
           if (( next_index >= total )); then next_index=0; fi
-          end_index=$((next_index + MAX_CHUNKS_PER_RUN))
-          if (( end_index > total )); then end_index=$total; fi
+          gh issue list -R "$SOURCE_REPO" --state open --limit 200 --json title --jq '.[].title' > "$REPORT_DIR/open-issue-titles.txt"
           : > "$REPORT_DIR/selected-chunks.txt"
-          for ((i=next_index; i<end_index; i++)); do printf '%s\n' "${dirs[$i]}" >> "$REPORT_DIR/selected-chunks.txt"; done
+          : > "$REPORT_DIR/skipped-open-chunks.txt"
+          selected=0
+          cursor=$next_index
+          checked=0
+          while (( checked < total && selected < MAX_CHUNKS_PER_RUN )); do
+            dir="${dirs[$cursor]}"
+            title="CodeRabbit Review: ${dir}"
+            if grep -Fxq "$title" "$REPORT_DIR/open-issue-titles.txt"; then
+              printf '%s\n' "$dir" >> "$REPORT_DIR/skipped-open-chunks.txt"
+            else
+              printf '%s\n' "$dir" >> "$REPORT_DIR/selected-chunks.txt"
+              selected=$((selected + 1))
+            fi
+            cursor=$(((cursor + 1) % total))
+            checked=$((checked + 1))
+          done
+          end_index=$cursor
           echo "base_sha=$base_sha" >> "$GITHUB_OUTPUT"
           echo "head_sha=$head_sha" >> "$GITHUB_OUTPUT"
           echo "start_index=$next_index" >> "$GITHUB_OUTPUT"
@@ -217,26 +219,58 @@ jobs:
           (report/'coderabbit-summary.md').write_text('\n'.join(lines)+'\n',encoding='utf-8')
           PY
 
-      - name: Upsert full report issue in source repo
+      - name: Upsert per-directory report issues in source repo
         if: always() && steps.interval_guard.outputs.skip != 'true'
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
         run: |
           set -euo pipefail
-          title='CodeRabbit Full Main History Review'
-          body_file="$REPORT_DIR/issue-body.md"
-          cat > "$body_file" <<EOF
-          # CodeRabbit Full Main History Review
-
-          - Public run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
-          - Source repo: ${SOURCE_REPO}
-          - Progress: chunks ${{ steps.range.outputs.start_index }}..${{ steps.range.outputs.end_index }} / ${{ steps.range.outputs.total_chunks }}
-
-          $(cat "$REPORT_DIR/coderabbit-summary.md")
-          EOF
-          issue="$(gh issue list -R "$SOURCE_REPO" --state all --search "$title in:title" --json number,title --jq '.[] | select(.title == "CodeRabbit Full Main History Review") | .number' | head -n 1)"
-          if [[ -z "$issue" ]]; then gh issue create -R "$SOURCE_REPO" --title "$title" --body-file "$body_file" >/dev/null; else gh issue edit "$issue" -R "$SOURCE_REPO" --body-file "$body_file"; gh issue reopen "$issue" -R "$SOURCE_REPO" || true; fi
+          python3 - <<'PY'
+          import json,pathlib,collections
+          report=pathlib.Path('coderabbit-full-report')
+          findings=[]
+          src=report/'coderabbit-review.jsonl'
+          if src.exists():
+            for line in src.read_text(encoding='utf-8', errors='replace').splitlines():
+              try: obj=json.loads(line)
+              except Exception: continue
+              if obj.get('type')=='finding': findings.append(obj)
+          statuses={}
+          status_file=report/'chunk-status.tsv'
+          if status_file.exists():
+            for row in status_file.read_text(encoding='utf-8', errors='replace').splitlines():
+              if '\t' in row:
+                d,s=row.split('\t',1); statuses[d]=s
+          selected=(report/'selected-chunks.txt').read_text(encoding='utf-8', errors='replace').splitlines() if (report/'selected-chunks.txt').exists() else []
+          body_dir=report/'issue-bodies'; body_dir.mkdir(exist_ok=True)
+          for dir in selected:
+            safe=dir.replace('/','_').replace('.','_')
+            dir_findings=[f for f in findings if str(f.get('fileName','')).startswith(dir+'/') or str(f.get('fileName',''))==dir]
+            counts=collections.Counter(f.get('severity','unknown') for f in dir_findings)
+            lines=[f'# CodeRabbit Review: {dir}','',f'- Public run: {__import__("os").environ.get("GITHUB_SERVER_URL")}/{__import__("os").environ.get("GITHUB_REPOSITORY")}/actions/runs/{__import__("os").environ.get("GITHUB_RUN_ID")}',f'- Source repo: {__import__("os").environ.get("SOURCE_REPO")}',f'- Directory: `{dir}`',f'- Status: {statuses.get(dir,"not-run")}',f'- Findings: {len(dir_findings)}',f'- Critical: {counts.get("critical",0)}',f'- Major: {counts.get("major",0)}',f'- Minor: {counts.get("minor",0)}','','## Error tail','']
+            err=report/'errors'/(safe+'.stderr.tail')
+            if err.exists() and err.read_text(encoding='utf-8', errors='replace').strip():
+              lines += ['```text', err.read_text(encoding='utf-8', errors='replace')[-4000:], '```']
+            lines += ['', '## Findings', '']
+            for f in dir_findings[:120]:
+              msg=str(f.get('message') or f.get('title') or f.get('codegenInstructions') or '').replace('\n',' ')[:500]
+              lines.append(f'- **{f.get("severity","unknown")}** `{f.get("fileName","")}`: {msg}')
+            (body_dir/(safe+'.md')).write_text('\n'.join(lines)+'\n', encoding='utf-8')
+          PY
+          while IFS= read -r dir; do
+            [[ -n "$dir" ]] || continue
+            safe="$(printf '%s' "$dir" | tr '/.' '___')"
+            title="CodeRabbit Review: ${dir}"
+            body_file="$REPORT_DIR/issue-bodies/${safe}.md"
+            issue="$(gh issue list -R "$SOURCE_REPO" --state all --search "$title in:title" --json number,title --jq --arg t "$title" '.[] | select(.title == $t) | .number' | head -n 1)"
+            if [[ -z "$issue" ]]; then
+              gh issue create -R "$SOURCE_REPO" --title "$title" --body-file "$body_file" >/dev/null
+            else
+              gh issue edit "$issue" -R "$SOURCE_REPO" --body-file "$body_file"
+              gh issue reopen "$issue" -R "$SOURCE_REPO" || true
+            fi
+          done < "$REPORT_DIR/selected-chunks.txt"
 
       - name: Update full scan state issue
         if: success() && steps.interval_guard.outputs.skip != 'true' && steps.review.outputs.failed != '1'
