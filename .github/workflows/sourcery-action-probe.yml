@@ -54,7 +54,7 @@ jobs:
           token: ${{ secrets.SOURCERY_TOKEN }}
           target: ${{ env.target }}
           check: false
-          fix: false
+          in_place: false
           verbose: false
 
       - name: Write probe issue
