@@ -3,6 +3,10 @@ name: CodeRabbit Main Full Review
 on:
   repository_dispatch:
     types: [coderabbit-main-full]
+  schedule:
+    # Weekly full-history CodeRabbit scan: Sunday 18:37 UTC / Monday 02:37 Beijing time.
+    # Schedule must live in this public default-branch workflow; private trigger schedules do not run until merged to the private default branch.
+    - cron: '37 18 * * 0'
   workflow_dispatch:
     inputs:
       reset:
