@@ -1,0 +1,164 @@
+name: CodeRabbit Main Incremental Review
+
+on:
+  schedule:
+    - cron: '0,20,40 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  SOURCE_REPO: vvvvy531/myproject-source
+  ARTIFACT_REPO: vvvvy531/myproject-linux-builds
+  AUTH_TAG: coderabbit-auth
+  STATE_TAG: coderabbit-state
+  REPORT_DIR: coderabbit-report
+
+jobs:
+  coderabbit-incremental:
+    name: CodeRabbit incremental main review
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Checkout private source main
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.SOURCE_REPO }}
+          token: ${{ secrets.PRIVATE_SOURCE_PAT }}
+          ref: main
+          fetch-depth: 0
+          lfs: false
+          submodules: recursive
+          path: source
+          persist-credentials: false
+
+      - name: Install CodeRabbit CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          export CI=1
+          curl -fsSL https://cli.coderabbit.ai/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Restore CodeRabbit auth
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.LINUX_BUILDS_PAT }}
+          CODERABBIT_AUTH_PASSWORD: ${{ secrets.CODERABBIT_AUTH_PASSWORD }}
+        run: |
+          set -euo pipefail
+          gh release download "$AUTH_TAG" -R "$ARTIFACT_REPO" -p coderabbit-auth.tar.gz.enc -D /tmp --clobber
+          openssl enc -d -aes-256-cbc -pbkdf2 \
+            -in /tmp/coderabbit-auth.tar.gz.enc \
+            -out /tmp/coderabbit-auth.tar.gz \
+            -pass pass:"$CODERABBIT_AUTH_PASSWORD"
+          tar -xzf /tmp/coderabbit-auth.tar.gz -C "$HOME"
+          rm -f /tmp/coderabbit-auth.tar.gz /tmp/coderabbit-auth.tar.gz.enc
+          chmod 700 "$HOME/.coderabbit" || true
+
+      - name: Determine incremental range
+        id: range
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.LINUX_BUILDS_PAT }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$REPORT_DIR" /tmp/coderabbit-state
+          head_sha="$(git -C source rev-parse HEAD)"
+          root_sha="$(git -C source rev-list --max-parents=0 HEAD | tail -n 1)"
+          last_sha=""
+          if gh release download "$STATE_TAG" -R "$ARTIFACT_REPO" -p coderabbit-state.json -D /tmp/coderabbit-state --clobber; then
+            last_sha="$(python3 - <<'PY'
+          import json, pathlib
+          p=pathlib.Path('/tmp/coderabbit-state/coderabbit-state.json')
+          print(json.loads(p.read_text()).get('last_completed_sha','') if p.exists() else '')
+          PY
+          )"
+          fi
+          if [[ -z "$last_sha" ]] || ! git -C source cat-file -e "$last_sha^{commit}" 2>/dev/null; then
+            last_sha="$root_sha"
+          fi
+          if [[ "$last_sha" == "$head_sha" ]]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "base_sha=$last_sha" >> "$GITHUB_OUTPUT"
+          echo "head_sha=$head_sha" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "$last_sha" > "$REPORT_DIR/base-sha.txt"
+          printf '%s\n' "$head_sha" > "$REPORT_DIR/head-sha.txt"
+          printf '%s\n' "incremental" > "$REPORT_DIR/mode.txt"
+
+      - name: Run CodeRabbit CLI review
+        if: steps.range.outputs.skip != 'true'
+        shell: bash
+        working-directory: source
+        run: |
+          set +x
+          coderabbit review --agent --base-commit "${{ steps.range.outputs.base_sha }}" > "../$REPORT_DIR/coderabbit-review.jsonl"
+
+      - name: Summarize findings
+        if: always() && steps.range.outputs.skip != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, pathlib, collections
+          report=pathlib.Path('coderabbit-report')
+          findings=[]
+          src=report/'coderabbit-review.jsonl'
+          if src.exists():
+              for line in src.read_text(encoding='utf-8', errors='replace').splitlines():
+                  try: obj=json.loads(line)
+                  except Exception: continue
+                  if obj.get('type') == 'finding': findings.append(obj)
+          counts=collections.Counter(f.get('severity','unknown') for f in findings)
+          lines=['# CodeRabbit Incremental Main Review','',f'- Base: {(report/"base-sha.txt").read_text().strip()}',f'- Head: {(report/"head-sha.txt").read_text().strip()}',f'- Findings: {len(findings)}',f'- Critical: {counts.get("critical",0)}',f'- Major: {counts.get("major",0)}',f'- Minor: {counts.get("minor",0)}','','## Top findings','']
+          for f in findings[:30]:
+              lines.append(f'- **{f.get("severity","unknown")}** `{f.get("fileName","")}`: {str(f.get("message") or f.get("title") or f.get("codegenInstructions") or "").replace(chr(10)," ")[:300]}')
+          (report/'coderabbit-summary.md').write_text('\n'.join(lines)+'\n', encoding='utf-8')
+          PY
+
+      - name: Publish report and issue
+        if: always() && steps.range.outputs.skip != 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.LINUX_BUILDS_PAT }}
+        run: |
+          set -euo pipefail
+          report_tag="coderabbit-incremental-${GITHUB_RUN_NUMBER}"
+          gh release create "$report_tag" -R "$ARTIFACT_REPO" --title "$report_tag" --notes-file "$REPORT_DIR/coderabbit-summary.md" --latest=false || true
+          gh release upload "$report_tag" -R "$ARTIFACT_REPO" "$REPORT_DIR"/* --clobber
+          body_file="$REPORT_DIR/issue-body.md"
+          cat > "$body_file" <<EOF
+          # CodeRabbit Incremental Main Review
+
+          - Public run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+          - Release assets: https://github.com/${ARTIFACT_REPO}/releases/tag/${report_tag}
+
+          $(cat "$REPORT_DIR/coderabbit-summary.md")
+          EOF
+          title='CodeRabbit Incremental Main Review'
+          issue="$(gh issue list -R "$ARTIFACT_REPO" --state all --search "$title in:title" --json number,title --jq '.[] | select(.title == "CodeRabbit Incremental Main Review") | .number' | head -n 1)"
+          if [[ -z "$issue" ]]; then gh issue create -R "$ARTIFACT_REPO" --title "$title" --body-file "$body_file" >/dev/null; else gh issue edit "$issue" -R "$ARTIFACT_REPO" --body-file "$body_file"; gh issue reopen "$issue" -R "$ARTIFACT_REPO" || true; fi
+
+      - name: Update completed state
+        if: success() && steps.range.outputs.skip != 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.LINUX_BUILDS_PAT }}
+        run: |
+          set -euo pipefail
+          printf '{"last_completed_sha":"%s","base_sha":"%s","mode":"incremental","run_id":"%s","updated_at":"%s"}\n' "${{ steps.range.outputs.head_sha }}" "${{ steps.range.outputs.base_sha }}" "$GITHUB_RUN_ID" "$(date -u +%FT%TZ)" > coderabbit-state.json
+          gh release create "$STATE_TAG" -R "$ARTIFACT_REPO" --title "$STATE_TAG" --notes 'CodeRabbit CLI last completed state' --latest=false || true
+          gh release upload "$STATE_TAG" -R "$ARTIFACT_REPO" coderabbit-state.json --clobber
+
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: |
+          set +x
+          rm -rf source "$HOME/.coderabbit"
+          rm -f ~/.git-credentials
+          git config --global --unset-all credential.helper || true
