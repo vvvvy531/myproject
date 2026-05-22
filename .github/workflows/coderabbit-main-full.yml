@@ -65,12 +65,48 @@ jobs:
           printf '%s\n' "$head_sha" > "$REPORT_DIR/head-sha.txt"
           printf '%s\n' full-root-to-head > "$REPORT_DIR/mode.txt"
 
-      - name: Run CodeRabbit CLI full review
+      - name: Run CodeRabbit CLI full review by directories
+        id: review
         shell: bash
         working-directory: source
         run: |
           set +x
-          coderabbit review --agent --base-commit "${{ steps.range.outputs.base_sha }}" > "../$REPORT_DIR/coderabbit-review.jsonl"
+          mkdir -p "../$REPORT_DIR/chunks"
+          dirs=(
+            ".github"
+            "Config"
+            "Source"
+            "Plugins/AIFeature"
+            "Plugins/MapGenFeature"
+            "Plugins/SaveSystemFeature"
+            "Plugins/RoguelikeCoreFeature"
+            "Plugins/RoguelikeSharedTypesFeature"
+            "Plugins/GameContentFeature"
+            "Plugins/GameplayMessageFeature"
+            "Plugins/InputSystemFeature"
+            "Plugins/MetaProgressionFeature"
+            "Plugins/QuestDialogueFeature"
+            "Plugins/TimeManagementFeature"
+            "Plugins/UIFeature"
+            "Plugins/YarnSpinner"
+            "Plugins"
+          )
+          : > "../$REPORT_DIR/chunk-status.tsv"
+          failed=0
+          for dir in "${dirs[@]}"; do
+            [[ -e "$dir" ]] || continue
+            safe="$(printf '%s' "$dir" | tr '/.' '__')"
+            echo "Review chunk: $dir"
+            if coderabbit review --agent --base-commit "${{ steps.range.outputs.base_sha }}" --dir "$dir" > "../$REPORT_DIR/chunks/${safe}.jsonl"; then
+              printf '%s\tsuccess\n' "$dir" >> "../$REPORT_DIR/chunk-status.tsv"
+            else
+              code=$?
+              printf '%s\tfailure:%s\n' "$dir" "$code" >> "../$REPORT_DIR/chunk-status.tsv"
+              failed=1
+            fi
+          done
+          cat ../$REPORT_DIR/chunks/*.jsonl > "../$REPORT_DIR/coderabbit-review.jsonl" 2>/dev/null || : > "../$REPORT_DIR/coderabbit-review.jsonl"
+          exit "$failed"
 
       - name: Summarize findings
         if: always()
@@ -86,8 +122,19 @@ jobs:
               except Exception: continue
               if obj.get('type')=='finding': findings.append(obj)
           c=collections.Counter(f.get('severity','unknown') for f in findings)
-          lines=['# CodeRabbit Full Main History Review','',f'- Base/root: {(report/"base-sha.txt").read_text().strip()}',f'- Head: {(report/"head-sha.txt").read_text().strip()}',f'- Findings: {len(findings)}',f'- Critical: {c.get("critical",0)}',f'- Major: {c.get("major",0)}',f'- Minor: {c.get("minor",0)}','','## Top findings','']
-          for f in findings[:50]: lines.append(f'- **{f.get("severity","unknown")}** `{f.get("fileName","")}`: {str(f.get("message") or f.get("title") or f.get("codegenInstructions") or "").replace(chr(10)," ")[:300]}')
+          status=(report/'chunk-status.tsv').read_text(encoding='utf-8', errors='replace') if (report/'chunk-status.tsv').exists() else ''
+          lines=['# CodeRabbit Full Main History Review','',f'- Base/root: {(report/"base-sha.txt").read_text().strip()}',f'- Head: {(report/"head-sha.txt").read_text().strip()}',f'- Findings: {len(findings)}',f'- Critical: {c.get("critical",0)}',f'- Major: {c.get("major",0)}',f'- Minor: {c.get("minor",0)}','','## Chunk status','']
+          for row in status.splitlines():
+            if '\t' in row:
+              d,s=row.split('\t',1); lines.append(f'- `{d}`: {s}')
+          lines += ['', '## Top findings', '']
+          seen=set()
+          for f in findings:
+            key=(f.get('severity'),f.get('fileName'),str(f.get('message') or f.get('title') or f.get('codegenInstructions') or '')[:120])
+            if key in seen: continue
+            seen.add(key)
+            lines.append(f'- **{f.get("severity","unknown")}** `{f.get("fileName","")}`: {str(f.get("message") or f.get("title") or f.get("codegenInstructions") or "").replace(chr(10)," ")[:300]}')
+            if len(seen) >= 80: break
           (report/'coderabbit-summary.md').write_text('\n'.join(lines)+'\n',encoding='utf-8')
           PY
 
