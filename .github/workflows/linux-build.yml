@@ -12,12 +12,11 @@ name: Private Source Linux Build
   repository_dispatch:
     types: [linux-build]
   schedule:
+    # Runtime-gated Linux build poll: every 18 minutes. Active builds are skipped by preflight.
+    - cron: '*/18 * * * *'
     # Weekly static analysis: Monday 03:00 UTC / 11:00 Beijing time.
     - cron: '0 3 * * 1'
 
-concurrency:
-  group: linux-build-${{ github.ref }}
-  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -38,7 +37,7 @@ jobs:
     name: Skip when Linux build already running
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    if: github.event_name != 'schedule' && (github.event_name != 'workflow_dispatch' || inputs.static_analysis != 'true')
+    if: github.event_name != 'schedule' || github.event.schedule != '0 3 * * 1'
     outputs:
       should_run: ${{ steps.guard.outputs.should_run }}
     steps:
@@ -498,7 +497,7 @@ jobs:
     name: Weekly CodeQL private report
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.static_analysis == 'true')
+    if: github.event_name == 'schedule' && github.event.schedule == '0 3 * * 1' || (github.event_name == 'workflow_dispatch' && inputs.static_analysis == 'true')
     env:
       ANALYSIS_TAG: static-analysis-${{ github.run_number }}
       REPORT_DIR: analysis-report
