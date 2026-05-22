@@ -1,0 +1,69 @@
+name: Private CI Issue Triage
+
+on:
+  schedule:
+    # Poll hourly; comments are rate-limited per issue by LAST_COMMENT_MIN_AGE_SECONDS.
+    - cron: '12 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  SOURCE_REPO: vvvvy531/myproject-source
+  PUBLIC_CI_REPO: vvvvy531/myproject
+  LINUX_WORKFLOW: Private Source Linux Build
+  LAST_COMMENT_MIN_AGE_SECONDS: "3600"
+
+jobs:
+  triage:
+    name: Triage private CI issues
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Update open private CI issues
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.SOURCE_REPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          now_epoch="$(date -u +%s)"
+          latest_runs="$(GH_TOKEN='${{ github.token }}' gh run list --repo "$PUBLIC_CI_REPO" --workflow "$LINUX_WORKFLOW" --limit 5 --json databaseId,status,conclusion,createdAt,url,event --jq '.[] | "- \(.createdAt) \(.event) \(.status)/\(.conclusion // "") \(.url)"')"
+          issues_json="$(gh issue list -R "$SOURCE_REPO" --state open --limit 100 --json number,title,updatedAt,url --jq '[.[] | select(.title | test("^CI:|CodeRabbit|Linux build"))]')"
+          count="$(jq length <<< "$issues_json")"
+          if [[ "$count" == "0" ]]; then
+            echo "No open CI issues."
+            exit 0
+          fi
+          jq -r '.[] | @base64' <<< "$issues_json" | while read -r row; do
+            issue="$(base64 -d <<< "$row")"
+            number="$(jq -r .number <<< "$issue")"
+            title="$(jq -r .title <<< "$issue")"
+            updated_at="$(jq -r .updatedAt <<< "$issue")"
+            updated_epoch="$(date -u -d "$updated_at" +%s)"
+            age=$((now_epoch - updated_epoch))
+            if (( age < LAST_COMMENT_MIN_AGE_SECONDS )); then
+              echo "Skip #$number: updated ${age}s ago"
+              continue
+            fi
+            body="/tmp/ci-triage-${number}.md"
+            cat > "$body" <<EOF
+          # CI issue triage reminder
+
+          This CI issue is still open and has not been updated for at least $((LAST_COMMENT_MIN_AGE_SECONDS / 60)) minutes.
+
+          Required action:
+          - inspect the latest public CI run logs
+          - identify whether this is a real build failure, cache/infra failure, or skipped-build noise
+          - fix the private source branch or close this issue if already resolved
+
+          Latest public Linux build runs:
+          ${latest_runs}
+
+          Triage run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+          Time: $(date -u +%FT%TZ)
+          EOF
+            gh issue comment "$number" -R "$SOURCE_REPO" --body-file "$body" >/dev/null
+            gh issue edit "$number" -R "$SOURCE_REPO" --add-label ci --add-label needs-triage >/dev/null || true
+          done
