@@ -390,11 +390,15 @@ jobs:
         if: always()
         shell: bash
         run: |
+          set -euo pipefail
+          mkdir -p dist
+          sudo chown -R "$USER:$USER" dist 2>/dev/null || true
+          chmod -R u+rwX dist 2>/dev/null || true
           build_exit_code="${{ steps.build.outputs.exit_code }}"
           [[ -n "$build_exit_code" ]] || build_exit_code="$(cat dist/build-exit-code.txt 2>/dev/null || true)"
           [[ -n "$build_exit_code" ]] || build_exit_code=1
           printf "%s\n" "$build_exit_code" > dist/build-exit-code.txt
-          BUILD_EXIT_CODE="$build_exit_code" python3 -c 'import json, os; json.dump({"sourceRepo": os.environ["SOURCE_REPO"], "runId": os.environ["GITHUB_RUN_ID"], "runNumber": os.environ["GITHUB_RUN_NUMBER"], "target": os.environ["TARGET_NAME"], "platform": "Linux", "configuration": "Development", "buildExitCode": os.environ["BUILD_EXIT_CODE"]}, open("dist/manifest.json", "w", encoding="utf-8"), indent=2)'
+          BUILD_EXIT_CODE="$build_exit_code" python3 -c 'import json, os; json.dump({"sourceRepo": os.environ["SOURCE_REPO"], "sourceRef": os.environ.get("SOURCE_REF", ""), "sourceSha": os.environ.get("SOURCE_SHA", ""), "runId": os.environ["GITHUB_RUN_ID"], "runNumber": os.environ["GITHUB_RUN_NUMBER"], "target": os.environ["TARGET_NAME"], "platform": "Linux", "configuration": "Development", "buildExitCode": os.environ["BUILD_EXIT_CODE"]}, open("dist/manifest.json", "w", encoding="utf-8"), indent=2)'
 
       - name: Drop empty artifacts
         if: always()
@@ -439,6 +443,51 @@ jobs:
               sleep $((attempt * 10))
             done
           done
+
+
+      - name: Report Linux build failure to private source issues
+        if: always() && steps.build.outputs.exit_code != '0'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.SOURCE_REPO_TOKEN }}
+          SOURCE_REPO: ${{ env.SOURCE_REPO }}
+          SOURCE_REF: ${{ env.SOURCE_REF }}
+          SOURCE_SHA: ${{ env.SOURCE_SHA }}
+          BUILD_EXIT_CODE: ${{ steps.build.outputs.exit_code }}
+        run: |
+          set -euo pipefail
+          title="CI: Linux build failed"
+          body="/tmp/linux-build-failure.md"
+          release_url="https://github.com/${ARTIFACT_REPO}/releases/tag/linux-${GITHUB_RUN_NUMBER}"
+          tail_file="/tmp/build-log-tail.txt"
+          if [[ -f dist/build.log ]]; then
+            tail -n 160 dist/build.log > "$tail_file" || true
+          else
+            echo "dist/build.log missing" > "$tail_file"
+          fi
+          cat > "$body" <<EOF
+          # Linux build failed
+
+          - Source repo: ${SOURCE_REPO}
+          - Source ref: ${SOURCE_REF}
+          - Source sha: ${SOURCE_SHA:-unknown}
+          - Public run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+          - Private release/logs: ${release_url}
+          - Build exit code: ${BUILD_EXIT_CODE:-unknown}
+          - Time: $(date -u +%FT%TZ)
+
+          ## Build log tail
+
+          \`\`\`text
+          $(cat "$tail_file")
+          \`\`\`
+          EOF
+          issue="$(gh issue list -R "$SOURCE_REPO" --state open --search "$title in:title" --json number,title --jq '.[] | select(.title == "CI: Linux build failed") | .number' | head -n 1)"
+          if [[ -z "$issue" ]]; then
+            gh issue create -R "$SOURCE_REPO" --title "$title" --body-file "$body" >/dev/null
+          else
+            gh issue comment "$issue" -R "$SOURCE_REPO" --body-file "$body" >/dev/null
+          fi
 
       - name: Fail job if build failed
         if: ${{ steps.build.outputs.exit_code != '0' }}
