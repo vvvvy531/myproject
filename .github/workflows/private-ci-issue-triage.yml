@@ -1,9 +1,6 @@
 name: Private CI Issue Triage
 
 on:
-  schedule:
-    # Poll hourly; comments are rate-limited per issue by LAST_COMMENT_MIN_AGE_SECONDS.
-    - cron: '12 * * * *'
   workflow_dispatch:
 
 permissions:
