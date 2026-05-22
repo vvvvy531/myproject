@@ -1,0 +1,179 @@
+name: CodeRabbit Main All Directories Review
+
+on:
+  workflow_dispatch:
+  repository_dispatch:
+    types: [coderabbit-main-all]
+
+permissions:
+  contents: read
+
+env:
+  SOURCE_REPO: vvvvy531/myproject-source
+  ARTIFACT_REPO: vvvvy531/myproject-linux-builds
+  AUTH_TAG: coderabbit-auth
+  REPORT_DIR: coderabbit-all-dirs-report
+
+jobs:
+  coderabbit-all-dirs:
+    name: CodeRabbit all directories main history review
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - name: Checkout private source main
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.SOURCE_REPO }}
+          token: ${{ secrets.PRIVATE_SOURCE_PAT }}
+          ref: main
+          fetch-depth: 0
+          lfs: false
+          submodules: recursive
+          path: source
+          persist-credentials: false
+
+      - name: Install CodeRabbit CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          export CI=1
+          curl -fsSL https://cli.coderabbit.ai/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Restore CodeRabbit auth
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.LINUX_BUILDS_PAT }}
+          CODERABBIT_AUTH_PASSWORD: ${{ secrets.CODERABBIT_AUTH_PASSWORD }}
+        run: |
+          set -euo pipefail
+          gh release download "$AUTH_TAG" -R "$ARTIFACT_REPO" -p coderabbit-auth.tar.gz.enc -D /tmp --clobber
+          openssl enc -d -aes-256-cbc -pbkdf2 -in /tmp/coderabbit-auth.tar.gz.enc -out /tmp/coderabbit-auth.tar.gz -pass pass:"$CODERABBIT_AUTH_PASSWORD"
+          tar -xzf /tmp/coderabbit-auth.tar.gz -C "$HOME"
+          rm -f /tmp/coderabbit-auth.tar.gz /tmp/coderabbit-auth.tar.gz.enc
+          chmod 700 "$HOME/.coderabbit" || true
+
+      - name: Determine full history range and all directories
+        id: range
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$REPORT_DIR"
+          base_sha="$(git -C source rev-list --max-parents=0 HEAD | tail -n 1)"
+          head_sha="$(git -C source rev-parse HEAD)"
+          dirs=(
+            "Plugins/AIFeature"
+            "Plugins/MapGenFeature"
+            "Plugins/SaveSystemFeature"
+            "Plugins/RoguelikeCoreFeature"
+            "Plugins/RoguelikeSharedTypesFeature"
+            "Plugins/GameContentFeature"
+            "Plugins/GameplayMessageFeature"
+            "Plugins/InputSystemFeature"
+            "Plugins/MetaProgressionFeature"
+            "Plugins/QuestDialogueFeature"
+            "Plugins/TimeManagementFeature"
+            "Plugins/UIFeature"
+            "Plugins/YarnSpinner"
+          )
+          printf '%s\n' "${dirs[@]}" > "$REPORT_DIR/selected-chunks.txt"
+          echo "base_sha=$base_sha" >> "$GITHUB_OUTPUT"
+          echo "head_sha=$head_sha" >> "$GITHUB_OUTPUT"
+          echo "total_chunks=${#dirs[@]}" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "$base_sha" > "$REPORT_DIR/base-sha.txt"
+          printf '%s\n' "$head_sha" > "$REPORT_DIR/head-sha.txt"
+          printf '%s\n' all-directories-root-to-head > "$REPORT_DIR/mode.txt"
+
+      - name: Run CodeRabbit CLI for all directories
+        id: review
+        shell: bash
+        working-directory: source
+        run: |
+          set +x
+          mkdir -p "../$REPORT_DIR/chunks" "../$REPORT_DIR/errors"
+          : > "../$REPORT_DIR/chunk-status.tsv"
+          failed=0
+          while IFS= read -r dir; do
+            [[ -n "$dir" && -e "$dir" ]] || continue
+            safe="$(printf '%s' "$dir" | tr '/.' '__')"
+            echo "Review chunk: $dir"
+            if coderabbit review --agent --base-commit "${{ steps.range.outputs.base_sha }}" --dir "$dir" > "../$REPORT_DIR/chunks/${safe}.jsonl" 2> "../$REPORT_DIR/errors/${safe}.stderr"; then
+              printf '%s\tsuccess\n' "$dir" >> "../$REPORT_DIR/chunk-status.tsv"
+            else
+              code=$?
+              printf '%s\tfailure:%s\n' "$dir" "$code" >> "../$REPORT_DIR/chunk-status.tsv"
+              failed=1
+              tail -n 80 "../$REPORT_DIR/errors/${safe}.stderr" > "../$REPORT_DIR/errors/${safe}.stderr.tail" || true
+            fi
+          done < "../$REPORT_DIR/selected-chunks.txt"
+          cat ../$REPORT_DIR/chunks/*.jsonl > "../$REPORT_DIR/coderabbit-review.jsonl" 2>/dev/null || : > "../$REPORT_DIR/coderabbit-review.jsonl"
+          echo "failed=$failed" >> "$GITHUB_OUTPUT"
+
+      - name: Summarize findings
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json,pathlib,collections
+          report=pathlib.Path('coderabbit-all-dirs-report'); findings=[]; src=report/'coderabbit-review.jsonl'
+          if src.exists():
+            for line in src.read_text(encoding='utf-8',errors='replace').splitlines():
+              try: obj=json.loads(line)
+              except Exception: continue
+              if obj.get('type')=='finding': findings.append(obj)
+          c=collections.Counter(f.get('severity','unknown') for f in findings)
+          status=(report/'chunk-status.tsv').read_text(encoding='utf-8', errors='replace') if (report/'chunk-status.tsv').exists() else ''
+          selected=(report/'selected-chunks.txt').read_text(encoding='utf-8', errors='replace') if (report/'selected-chunks.txt').exists() else ''
+          lines=['# CodeRabbit Main All Directories Review','',f'- Base/root: {(report/"base-sha.txt").read_text().strip()}',f'- Head: {(report/"head-sha.txt").read_text().strip()}',f'- Directories: {selected.strip().replace(chr(10), ", ")}',f'- Findings this run: {len(findings)}',f'- Critical: {c.get("critical",0)}',f'- Major: {c.get("major",0)}',f'- Minor: {c.get("minor",0)}','','## Chunk status','']
+          for row in status.splitlines():
+            if '\t' in row:
+              d,s=row.split('\t',1); lines.append(f'- `{d}`: {s}')
+          lines += ['', '## Error tails', '']
+          errdir=report/'errors'
+          if errdir.exists():
+            for p in sorted(errdir.glob('*.stderr.tail')):
+              text=p.read_text(encoding='utf-8', errors='replace').strip()
+              if text:
+                lines += [f'### `{p.name}`', '```text', text[-4000:], '```', '']
+          lines += ['', '## Top findings', '']
+          seen=set()
+          for f in findings:
+            key=(f.get('severity'),f.get('fileName'),str(f.get('message') or f.get('title') or f.get('codegenInstructions') or '')[:120])
+            if key in seen: continue
+            seen.add(key)
+            lines.append(f'- **{f.get("severity","unknown")}** `{f.get("fileName","")}`: {str(f.get("message") or f.get("title") or f.get("codegenInstructions") or "").replace(chr(10)," ")[:300]}')
+            if len(seen) >= 120: break
+          (report/'coderabbit-summary.md').write_text('\n'.join(lines)+'\n',encoding='utf-8')
+          PY
+
+      - name: Upsert all directories report issue in source repo
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
+        run: |
+          set -euo pipefail
+          title='CodeRabbit Main All Directories Review'
+          body_file="$REPORT_DIR/issue-body.md"
+          cat > "$body_file" <<EOF
+          # CodeRabbit Main All Directories Review
+
+          - Public run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+          - Source repo: ${SOURCE_REPO}
+          - Directories: ${{ steps.range.outputs.total_chunks }}
+          - Any chunk failed: ${{ steps.review.outputs.failed }}
+
+          $(cat "$REPORT_DIR/coderabbit-summary.md")
+          EOF
+          issue="$(gh issue list -R "$SOURCE_REPO" --state all --search "$title in:title" --json number,title --jq '.[] | select(.title == "CodeRabbit Main All Directories Review") | .number' | head -n 1)"
+          if [[ -z "$issue" ]]; then gh issue create -R "$SOURCE_REPO" --title "$title" --body-file "$body_file" >/dev/null; else gh issue edit "$issue" -R "$SOURCE_REPO" --body-file "$body_file"; gh issue reopen "$issue" -R "$SOURCE_REPO" || true; fi
+
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: |
+          set +x
+          rm -rf source "$HOME/.coderabbit" "$REPORT_DIR"
+          rm -f ~/.git-credentials
+          git config --global --unset-all credential.helper || true
