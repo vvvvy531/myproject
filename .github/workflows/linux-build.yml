@@ -12,7 +12,7 @@ name: Private Source Linux Build
   repository_dispatch:
     types: [linux-build]
   schedule:
-    # Runtime-gated Linux build poll: every 18 minutes. Active builds are skipped by preflight.
+    # Runtime-gated Linux build poll: every 18 minutes. Active builds are skipped inside the build job.
     - cron: '*/18 * * * *'
     # Weekly static analysis: Monday 03:00 UTC / 11:00 Beijing time.
     - cron: '0 3 * * 1'
@@ -33,16 +33,13 @@ env:
   SOURCE_SHA: ${{ github.event.client_payload.source_sha || '' }}
 
 jobs:
-  preflight-linux-build:
-    name: Skip when Linux build already running
+  build-linux:
+    name: UE 5.7.4 Linux smoke build
     runs-on: ubuntu-latest
-    timeout-minutes: 5
-    if: github.event_name != 'schedule' || github.event.schedule != '0 3 * * 1'
-    outputs:
-      should_run: ${{ steps.guard.outputs.should_run }}
+    timeout-minutes: 120
     steps:
-      - name: Detect active Linux build
-        id: guard
+      - name: Runtime skip when Linux build already running
+        id: runtime_guard
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -65,14 +62,14 @@ jobs:
           fi
 
       - name: Report skipped Linux build to private source issues
-        if: steps.guard.outputs.should_run == 'false'
+        if: steps.runtime_guard.outputs.should_run == 'false'
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.SOURCE_REPO_TOKEN }}
           SOURCE_REPO: ${{ env.SOURCE_REPO }}
           SOURCE_REF: ${{ env.SOURCE_REF }}
           SOURCE_SHA: ${{ env.SOURCE_SHA }}
-          ACTIVE_BUILD: ${{ steps.guard.outputs.active_build }}
+          ACTIVE_BUILD: ${{ steps.runtime_guard.outputs.active_build }}
         run: |
           set -euo pipefail
           title="CI: Linux build skipped because another build is active"
@@ -97,14 +94,8 @@ jobs:
             gh issue comment "$issue" -R "$SOURCE_REPO" --body-file "$body" >/dev/null
           fi
 
-  build-linux:
-    name: UE 5.7.4 Linux smoke build
-    runs-on: ubuntu-latest
-    timeout-minutes: 120
-    needs: preflight-linux-build
-    if: needs.preflight-linux-build.outputs.should_run == 'true'
-    steps:
       - name: Free hosted runner disk
+        if: steps.runtime_guard.outputs.should_run == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -114,6 +105,7 @@ jobs:
           df -h
 
       - name: Login to GHCR
+        if: steps.runtime_guard.outputs.should_run == 'true'
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -121,11 +113,13 @@ jobs:
           password: ${{ secrets.GHCR_TOKEN }}
 
       - name: Start UE image pull in background
+        if: steps.runtime_guard.outputs.should_run == 'true'
         shell: bash
         run: |
           set -euo pipefail
           nohup bash -lc 'docker pull "$UE_IMAGE" > /tmp/ue-image-pull.log 2>&1' & echo $! > /tmp/ue-image-pull.pid
       - name: Checkout private source
+        if: steps.runtime_guard.outputs.should_run == 'true'
         uses: actions/checkout@v4
         with:
           repository: ${{ env.SOURCE_REPO }}
@@ -136,6 +130,7 @@ jobs:
           submodules: recursive
 
       - name: Record checked out source revision
+        if: steps.runtime_guard.outputs.should_run == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -147,10 +142,12 @@ jobs:
           fi
 
       - name: Prepare output directory
+        if: steps.runtime_guard.outputs.should_run == 'true'
         shell: bash
         run: mkdir -p dist .sccache-cache .build-cache-restore .build-cache-restore
 
       - name: Normalize private source file mtimes for UBT incremental cache
+        if: steps.runtime_guard.outputs.should_run == 'true'
         shell: bash
         working-directory: source
         run: |
@@ -169,6 +166,7 @@ jobs:
       # Public actions/cache intentionally avoids private source build products.
       # Compiler/object caches live only in private release assets requiring ARTIFACT_REPO_TOKEN.
       - name: Restore sccache compiler cache from private builds repo
+        if: steps.runtime_guard.outputs.should_run == 'true'
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.ARTIFACT_REPO_TOKEN }}
@@ -186,6 +184,7 @@ jobs:
 
 
       - name: Restore UE build products cache from private builds repo
+        if: steps.runtime_guard.outputs.should_run == 'true'
         shell: bash
         continue-on-error: true
         env:
@@ -214,6 +213,7 @@ jobs:
           fi
 
       - name: Build Linux target in official UE container
+        if: steps.runtime_guard.outputs.should_run == 'true'
         id: build
         shell: bash
         continue-on-error: true
@@ -332,7 +332,7 @@ jobs:
           echo "exit_code=$code" >> "$GITHUB_OUTPUT"
 
       - name: Save sccache compiler cache to private builds repo
-        if: always()
+        if: steps.runtime_guard.outputs.should_run == 'true' && always()
         continue-on-error: true
         shell: bash
         env:
@@ -352,7 +352,7 @@ jobs:
 
 
       - name: Save UE build products cache to private builds repo
-        if: always()
+        if: steps.runtime_guard.outputs.should_run == 'true' && always()
         continue-on-error: true
         shell: bash
         env:
@@ -386,7 +386,7 @@ jobs:
           fi
 
       - name: Write manifest
-        if: always()
+        if: steps.runtime_guard.outputs.should_run == 'true' && always()
         shell: bash
         run: |
           set -euo pipefail
@@ -400,12 +400,12 @@ jobs:
           BUILD_EXIT_CODE="$build_exit_code" python3 -c 'import json, os; json.dump({"sourceRepo": os.environ["SOURCE_REPO"], "sourceRef": os.environ.get("SOURCE_REF", ""), "sourceSha": os.environ.get("SOURCE_SHA", ""), "runId": os.environ["GITHUB_RUN_ID"], "runNumber": os.environ["GITHUB_RUN_NUMBER"], "target": os.environ["TARGET_NAME"], "platform": "Linux", "configuration": "Development", "buildExitCode": os.environ["BUILD_EXIT_CODE"]}, open("dist/manifest.json", "w", encoding="utf-8"), indent=2)'
 
       - name: Drop empty artifacts
-        if: always()
+        if: steps.runtime_guard.outputs.should_run == 'true' && always()
         shell: bash
         run: find dist -type f -size 0 -delete 2>/dev/null || true
 
       - name: Publish private release with logs
-        if: always()
+        if: steps.runtime_guard.outputs.should_run == 'true' && always()
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.ARTIFACT_REPO_TOKEN }}
@@ -445,7 +445,7 @@ jobs:
 
 
       - name: Report Linux build failure to private source issues
-        if: always() && steps.build.outputs.exit_code != '0'
+        if: steps.runtime_guard.outputs.should_run == 'true' && always() && steps.build.outputs.exit_code != '0'
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.SOURCE_REPO_TOKEN }}
@@ -489,7 +489,7 @@ jobs:
           fi
 
       - name: Fail job if build failed
-        if: ${{ steps.build.outputs.exit_code != '0' }}
+        if: steps.runtime_guard.outputs.should_run == 'true' && steps.build.outputs.exit_code != '0'
         shell: bash
         run: exit 1
 
@@ -633,3 +633,4 @@ jobs:
             gh issue comment "$issue_number" -R "$ARTIFACT_REPO" --body "Weekly static analysis found 0 CodeQL findings for ${source_sha}. Release: ${release_url}"
             gh issue close "$issue_number" -R "$ARTIFACT_REPO" || true
           fi
+
