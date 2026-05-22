@@ -169,24 +169,25 @@ jobs:
         working-directory: source
         run: |
           set +x
-          mkdir -p "../$REPORT_DIR/chunks"
+          mkdir -p "../$REPORT_DIR/chunks" "../$REPORT_DIR/errors"
           : > "../$REPORT_DIR/chunk-status.tsv"
           failed=0
           while IFS= read -r dir; do
             [[ -n "$dir" && -e "$dir" ]] || continue
             safe="$(printf '%s' "$dir" | tr '/.' '__')"
             echo "Review chunk: $dir"
-            if coderabbit review --agent --base-commit "${{ steps.range.outputs.base_sha }}" --dir "$dir" > "../$REPORT_DIR/chunks/${safe}.jsonl"; then
+            if coderabbit review --agent --base-commit "${{ steps.range.outputs.base_sha }}" --dir "$dir" > "../$REPORT_DIR/chunks/${safe}.jsonl" 2> "../$REPORT_DIR/errors/${safe}.stderr"; then
               printf '%s\tsuccess\n' "$dir" >> "../$REPORT_DIR/chunk-status.tsv"
             else
               code=$?
               printf '%s\tfailure:%s\n' "$dir" "$code" >> "../$REPORT_DIR/chunk-status.tsv"
               failed=1
-              break
+              tail -n 80 "../$REPORT_DIR/errors/${safe}.stderr" > "../$REPORT_DIR/errors/${safe}.stderr.tail" || true
             fi
           done < "../$REPORT_DIR/selected-chunks.txt"
           cat ../$REPORT_DIR/chunks/*.jsonl > "../$REPORT_DIR/coderabbit-review.jsonl" 2>/dev/null || : > "../$REPORT_DIR/coderabbit-review.jsonl"
-          exit "$failed"
+          echo "failed=$failed" >> "$GITHUB_OUTPUT"
+          exit 0
 
       - name: Summarize findings
         if: always() && steps.interval_guard.outputs.skip != 'true'
@@ -208,6 +209,13 @@ jobs:
           for row in status.splitlines():
             if '\t' in row:
               d,s=row.split('\t',1); lines.append(f'- `{d}`: {s}')
+          lines += ['', '## Error tails', '']
+          errdir=report/'errors'
+          if errdir.exists():
+            for p in sorted(errdir.glob('*.stderr.tail')):
+              text=p.read_text(encoding='utf-8', errors='replace').strip()
+              if text:
+                lines += [f'### `{p.name}`', '```text', text[-4000:], '```', '']
           lines += ['', '## Top findings', '']
           seen=set()
           for f in findings:
@@ -241,7 +249,7 @@ jobs:
           if [[ -z "$issue" ]]; then gh issue create -R "$SOURCE_REPO" --title "$title" --body-file "$body_file" >/dev/null; else gh issue edit "$issue" -R "$SOURCE_REPO" --body-file "$body_file"; gh issue reopen "$issue" -R "$SOURCE_REPO" || true; fi
 
       - name: Update full scan state issue
-        if: success() && steps.interval_guard.outputs.skip != 'true'
+        if: success() && steps.interval_guard.outputs.skip != 'true' && steps.review.outputs.failed != '1'
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
@@ -266,7 +274,7 @@ jobs:
           if [[ -z "$issue" ]]; then gh issue create -R "$SOURCE_REPO" --title "$title" --body-file "$body_file" >/dev/null; else gh issue edit "$issue" -R "$SOURCE_REPO" --body-file "$body_file"; gh issue reopen "$issue" -R "$SOURCE_REPO" || true; fi
 
       - name: Seed incremental state when full scan completes
-        if: success() && steps.interval_guard.outputs.skip != 'true' && steps.range.outputs.end_index == steps.range.outputs.total_chunks
+        if: success() && steps.interval_guard.outputs.skip != 'true' && steps.review.outputs.failed != '1' && steps.range.outputs.end_index == steps.range.outputs.total_chunks
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
