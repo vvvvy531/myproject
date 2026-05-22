@@ -2,7 +2,7 @@ name: CodeRabbit Main Full Review
 
 on:
   schedule:
-    - cron: '0 * * * *'
+    - cron: '17 * * * *'
   workflow_dispatch:
     inputs:
       reset:
