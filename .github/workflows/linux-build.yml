@@ -349,7 +349,7 @@ jobs:
         run: exit 1
 
   static-analysis:
-    name: Weekly SonarCloud and CodeQL private report
+    name: Weekly CodeQL private report
     runs-on: ubuntu-latest
     timeout-minutes: 60
     if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.static_analysis == 'true')
@@ -374,19 +374,6 @@ jobs:
           set -euo pipefail
           mkdir -p "$REPORT_DIR"
           git -C source rev-parse HEAD > "$REPORT_DIR/source-sha.txt"
-
-      - name: SonarCloud scan
-        uses: SonarSource/sonarqube-scan-action@v5
-        continue-on-error: true
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-        with:
-          projectBaseDir: source
-          args: >
-            -Dsonar.organization=${{ vars.SONAR_ORGANIZATION }}
-            -Dsonar.projectKey=${{ vars.SONAR_PROJECT_KEY }}
-            -Dsonar.sources=.
-            -Dsonar.exclusions=Intermediate/**,Saved/**,Binaries/**,DerivedDataCache/**,Plugins/**/Intermediate/**,Plugins/**/Binaries/**
 
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v4
@@ -478,7 +465,6 @@ jobs:
           source_sha="$(cat "$REPORT_DIR/source-sha.txt")"
           release_url="https://github.com/${ARTIFACT_REPO}/releases/tag/${ANALYSIS_TAG}"
           run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
-          sonar_url="https://sonarcloud.io/project/overview?id=${{ vars.SONAR_PROJECT_KEY }}"
           summary="$(cat "$REPORT_DIR/codeql-summary.md")"
           body_file="$REPORT_DIR/issue-body.md"
           cat > "$body_file" <<EOF
@@ -488,7 +474,6 @@ jobs:
           - Source repo: ${SOURCE_REPO}
           - Source commit: ${source_sha}
           - Private release assets: ${release_url}
-          - SonarCloud: ${sonar_url}
 
           ${summary}
           EOF
