@@ -30,6 +30,8 @@ env:
   PROJECT_FILE: MyProject.uproject
   TARGET_NAME: MyProject
   UE_IMAGE: ghcr.io/epicgames/unreal-engine:dev-slim-5.7.4
+  SOURCE_REF: ${{ github.event.client_payload.source_ref || 'main' }}
+  SOURCE_SHA: ${{ github.event.client_payload.source_sha || '' }}
 
 jobs:
   build-linux:
@@ -64,9 +66,21 @@ jobs:
         with:
           repository: ${{ env.SOURCE_REPO }}
           token: ${{ secrets.SOURCE_REPO_TOKEN }}
+          ref: ${{ env.SOURCE_REF }}
           path: source
           lfs: false
           submodules: recursive
+
+      - name: Record checked out source revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Requested source ref: ${SOURCE_REF}"
+          echo "Requested source sha: ${SOURCE_SHA:-<none>}"
+          git -C source rev-parse HEAD
+          if [[ -n "${SOURCE_SHA:-}" && "$(git -C source rev-parse HEAD)" != "${SOURCE_SHA}" ]]; then
+            echo "Warning: checked out source HEAD does not match requested source sha" >&2
+          fi
 
       - name: Prepare output directory
         shell: bash
