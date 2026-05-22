@@ -1,0 +1,65 @@
+name: Private CI Issue Triage
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Hourly reminder for private source CI issues.
+    - cron: '12 * * * *'
+
+permissions:
+  contents: read
+
+jobs:
+  triage:
+    name: Triage private source CI issues
+    runs-on: ubuntu-latest
+    steps:
+      - name: Comment on stale private CI issues
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.SOURCE_REPO_TOKEN }}
+          SOURCE_REPO: ${{ vars.SOURCE_REPO || 'vvvvy531/myproject-source' }}
+          PUBLIC_REPO: ${{ github.repository }}
+          STALE_MINUTES: '60'
+        run: |
+          set -euo pipefail
+          now_epoch="$(date -u +%s)"
+          issues_json="$(gh issue list -R "$SOURCE_REPO" --state open --limit 100 --json number,title,updatedAt,url)"
+          blocker_count=0
+          while IFS=$'\t' read -r number title updated_at url; do
+            [[ -n "${number:-}" ]] || continue
+            case "$title" in
+              CI:*|*Linux\ build*|*CodeRabbit*) ;;
+              *) continue ;;
+            esac
+            updated_epoch="$(date -u -d "$updated_at" +%s)"
+            age_min="$(( (now_epoch - updated_epoch) / 60 ))"
+            if [[ "$title" == "CI: Linux build failed"* ]]; then
+              blocker_count="$((blocker_count + 1))"
+            fi
+            if (( age_min < STALE_MINUTES )); then
+              continue
+            fi
+            body="$(mktemp)"
+            cat > "$body" <<EOF
+          ## Scheduled private CI issue triage
+
+          This issue is still open and has not been updated for ${age_min} minutes.
+
+          Required action:
+          - If this is a real build/review failure, fix the source issue in a PR.
+          - If a newer successful run resolved it, close this issue.
+          - If this is only \"skipped because another build is active\", verify an active public run exists; otherwise dispatch a new build.
+
+          Links:
+          - Private issue: ${url}
+          - Public workflow runs: https://github.com/${PUBLIC_REPO}/actions/workflows/linux-build.yml
+          - Time: $(date -u +%FT%TZ)
+          EOF
+            gh issue comment "$number" -R "$SOURCE_REPO" --body-file "$body" >/dev/null || true
+            gh issue edit "$number" -R "$SOURCE_REPO" --add-label ci --add-label needs-triage >/dev/null 2>&1 || true
+          done < <(jq -r '.[] | [.number, .title, .updatedAt, .url] | @tsv' <<< "$issues_json")
+
+          if (( blocker_count > 0 )); then
+            echo "Found ${blocker_count} open CI Linux build failure issue(s)."
+          fi
