@@ -3,6 +3,8 @@ name: CodeRabbit Main Full Review
 on:
   schedule:
     - cron: '17 * * * *'
+  repository_dispatch:
+    types: [coderabbit-main-full]
   workflow_dispatch:
     inputs:
       reset:
