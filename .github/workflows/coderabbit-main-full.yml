@@ -1,6 +1,8 @@
 name: CodeRabbit Main Full Review
 
 on:
+  schedule:
+    - cron: '0 * * * *'
   workflow_dispatch:
     inputs:
       reset:
@@ -71,9 +73,6 @@ jobs:
           base_sha="$(git -C source rev-list --max-parents=0 HEAD | tail -n 1)"
           head_sha="$(git -C source rev-parse HEAD)"
           dirs=(
-            ".github"
-            "Config"
-            "Source"
             "Plugins/AIFeature"
             "Plugins/MapGenFeature"
             "Plugins/SaveSystemFeature"
@@ -87,7 +86,6 @@ jobs:
             "Plugins/TimeManagementFeature"
             "Plugins/UIFeature"
             "Plugins/YarnSpinner"
-            "Plugins"
           )
           printf '%s\n' "${dirs[@]}" > "$REPORT_DIR/all-chunks.txt"
           next_index=0
