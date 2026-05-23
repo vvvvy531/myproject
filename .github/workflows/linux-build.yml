@@ -894,11 +894,13 @@ jobs:
 
     name: Weekly CodeQL private report
 
+    needs: build-linux
+
     runs-on: ubuntu-latest
 
     timeout-minutes: 60
 
-    if: github.event_name == 'workflow_dispatch' && inputs.static_analysis == 'true'
+    if: github.event_name == 'workflow_dispatch' && inputs.static_analysis == 'true' && needs.build-linux.result == 'success'
 
     env:
 
