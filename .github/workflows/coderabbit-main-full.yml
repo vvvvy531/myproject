@@ -195,7 +195,7 @@ jobs:
           exit 0
 
       - name: Summarize findings
-        if: always() && steps.interval_guard.outputs.skip != 'true'
+        if: success() && steps.interval_guard.outputs.skip != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -233,7 +233,7 @@ jobs:
           PY
 
       - name: Upsert per-directory report issues in source repo
-        if: always() && steps.interval_guard.outputs.skip != 'true'
+        if: success() && steps.interval_guard.outputs.skip != 'true'
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
@@ -256,7 +256,7 @@ jobs:
               if '\t' in row:
                 d,s=row.split('\t',1); statuses[d]=s
           selected=(report/'selected-chunks.txt').read_text(encoding='utf-8', errors='replace').splitlines() if (report/'selected-chunks.txt').exists() else []
-          body_dir=report/'issue-bodies'; body_dir.mkdir(exist_ok=True)
+          body_dir=report/'issue-bodies'; body_dir.mkdir(parents=True, exist_ok=True)
           for dir in selected:
             safe=dir.replace('/','_').replace('.','_')
             dir_findings=[f for f in findings if str(f.get('fileName','')).startswith(dir+'/') or str(f.get('fileName',''))==dir]
@@ -336,7 +336,7 @@ jobs:
           if [[ -z "$issue" ]]; then gh issue create -R "$SOURCE_REPO" --title "$title" --body-file "$body_file" >/dev/null; else gh issue edit "$issue" -R "$SOURCE_REPO" --body-file "$body_file"; gh issue reopen "$issue" -R "$SOURCE_REPO" || true; fi
 
       - name: Cleanup
-        if: always() && steps.interval_guard.outputs.skip != 'true'
+        if: success() && steps.interval_guard.outputs.skip != 'true'
         shell: bash
         run: |
           set +x
