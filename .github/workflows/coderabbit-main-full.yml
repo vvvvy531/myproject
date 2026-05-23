@@ -1,9 +1,14 @@
 name: CodeRabbit Main Full Review
 
 on:
-  schedule:
-    # Poll every 15 minutes; run only when the previous run started at least 70 minutes ago.
-    - cron: '*/15 * * * *'
+  workflow_dispatch:
+    inputs:
+      reset:
+        description: Reset full scan directory progress
+        required: false
+        default: "false"
+        type: choice
+        options: ["false", "true"]
 
 permissions:
   contents: read
