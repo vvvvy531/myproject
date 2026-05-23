@@ -109,8 +109,7 @@ jobs:
           GITHUB__USER_TOKEN: ${{ github.event_name == 'pull_request' && github.token || secrets.PRIVATE_SOURCE_PAT }}
           OPENAI__KEY: ${{ secrets.CLIPROXY_API_KEY }}
           OPENAI__API_BASE: https://cliproxy.boxd.sh/v1
-          config.model: gpt-5.5
-          config.fallback_models: '["cx/gpt-5.5"]'
+          config.model: cx/gpt-5.5-review
           config.custom_model_max_tokens: '128000'
           config.ai_timeout: '300'
           config.verbosity_level: '1'
