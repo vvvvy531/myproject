@@ -110,6 +110,7 @@ jobs:
           OPENAI__KEY: ${{ secrets.CLIPROXY_API_KEY }}
           OPENAI__API_BASE: https://cliproxy.boxd.sh/v1
           config.model: cx/gpt-5.5-review
+          config.weak_model: cx/gpt-5.5-review
           config.custom_model_max_tokens: '128000'
           config.ai_timeout: '300'
           config.verbosity_level: '1'
