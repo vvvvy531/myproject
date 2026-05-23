@@ -33,18 +33,18 @@ jobs:
           set -euo pipefail
           echo "skip=false" >> "$GITHUB_OUTPUT"
           now_epoch="$(date -u +%s)"
-          recent="$(gh run list --repo "$REPO" --workflow "$WORKFLOW" --limit 20 --json databaseId,status,createdAt,event \
-            --jq '.[] | select(.databaseId != ${{ github.run_id }} and (.status == "in_progress" or .status == "queued" or .status == "pending" or .status == "completed")) | [.databaseId,.status,.createdAt,.event] | @tsv' || true)"
+          recent="$(gh run list --repo "$REPO" --workflow "$WORKFLOW" --limit 50 --json databaseId,status,conclusion,createdAt,event \
+            --jq '.[] | select(.databaseId != ${{ github.run_id }} and .status == "completed" and .conclusion == "success" and (.event == "schedule" or .event == "workflow_dispatch" or .event == "repository_dispatch")) | [.databaseId,.conclusion,.createdAt,.event] | @tsv' || true)"
           recent="$(printf '%s\n' "$recent" | sed '/^$/d' | sort -k3,3r | sed -n '1p')"
           if [[ -z "$recent" ]]; then
             exit 0
           fi
-          IFS=$'\t' read -r run_id run_status run_created run_event <<< "$recent"
+          IFS=$'\t' read -r run_id run_conclusion run_created run_event <<< "$recent"
           run_epoch="$(date -u -d "$run_created" +%s)"
           age=$((now_epoch - run_epoch))
           if (( age < MIN_INTERVAL_SECONDS )); then
             echo "skip=true" >> "$GITHUB_OUTPUT"
-            echo "skip_reason=Last CodeRabbit full run ${run_id} (${run_status}/${run_event}) started ${age}s ago; minimum interval is ${MIN_INTERVAL_SECONDS}s." >> "$GITHUB_OUTPUT"
+            echo "skip_reason=Last successful CodeRabbit full run ${run_id} (${run_conclusion}/${run_event}) started ${age}s ago; minimum interval is ${MIN_INTERVAL_SECONDS}s." >> "$GITHUB_OUTPUT"
           fi
 
       - name: Checkout private source main
