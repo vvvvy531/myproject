@@ -355,6 +355,22 @@ jobs:
 
           fi
 
+      - name: Download SonarCloud build wrapper
+
+        if: steps.runtime_guard.outputs.should_run == 'true' && github.event_name == 'workflow_dispatch' && inputs.static_analysis == 'true'
+
+        shell: bash
+
+        run: |
+
+          set -euo pipefail
+
+          mkdir -p source/.sonar
+
+          curl -fsSL https://sonarcloud.io/static/cpp/build-wrapper-linux-x86.zip -o /tmp/build-wrapper-linux-x86.zip
+
+          unzip -q -o /tmp/build-wrapper-linux-x86.zip -d source/.sonar
+
       - name: Initialize CodeQL for advanced review
 
         if: steps.runtime_guard.outputs.should_run == 'true' && github.event_name == 'workflow_dispatch' && inputs.static_analysis == 'true'
@@ -553,7 +569,13 @@ jobs:
 
               set +e
 
-              /home/ue4/UnrealEngine/Engine/Build/BatchFiles/Linux/Build.sh "$TARGET_NAME" Linux Development "$PWD/$PROJECT_FILE" -WaitMutex -NoHotReload -NoUBA -MaxParallelActions=4 -VeryVerbose 2>&1 | tee ../dist/build.log
+              build_cmd=(/home/ue4/UnrealEngine/Engine/Build/BatchFiles/Linux/Build.sh "$TARGET_NAME" Linux Development "$PWD/$PROJECT_FILE" -WaitMutex -NoHotReload -NoUBA -MaxParallelActions=4 -VeryVerbose)
+              if [[ -x .sonar/build-wrapper-linux-x86/build-wrapper-linux-x86-64 ]]; then
+                rm -rf .sonar/bw-output
+                .sonar/build-wrapper-linux-x86/build-wrapper-linux-x86-64 --out-dir .sonar/bw-output "${build_cmd[@]}" 2>&1 | tee ../dist/build.log
+              else
+                "${build_cmd[@]}" 2>&1 | tee ../dist/build.log
+              fi
 
               code=${PIPESTATUS[0]}
 
@@ -669,7 +691,9 @@ jobs:
 
             -Dsonar.sources=.
 
-            -Dsonar.exclusions=**/Binaries/**,**/DerivedDataCache/**,**/Intermediate/**,**/Saved/**,**/.git/**,**/.github/**,**/graphify-out/**
+            -Dsonar.cfamily.build-wrapper-output=.sonar/bw-output
+
+            -Dsonar.exclusions=**/Binaries/**,**/DerivedDataCache/**,**/Intermediate/**,**/Saved/**,**/.git/**,**/.github/**,**/graphify-out/**,**/.sonar/build-wrapper-linux-x86/**
 
       - name: Run CodeQL advanced analysis
 
