@@ -301,7 +301,7 @@ jobs:
 
       - name: Restore UE build products cache from private builds repo
 
-        if: steps.runtime_guard.outputs.should_run == 'true'
+        if: steps.runtime_guard.outputs.should_run == 'true' && (github.event_name != 'workflow_dispatch' || inputs.static_analysis != 'true')
 
         shell: bash
 
@@ -567,6 +567,12 @@ jobs:
 
               /opt/sccache/sccache --start-server || true
 
+              if [[ -x .sonar/build-wrapper-linux-x86/build-wrapper-linux-x86-64 ]]; then
+                echo "Advanced analysis: removing UE incremental outputs before build-wrapper capture"
+                rm -rf Binaries Intermediate Saved/UnrealBuildTool
+                find Plugins -type d \( -name Binaries -o -name Intermediate \) -prune -exec rm -rf {} + 2>/dev/null || true
+              fi
+
               set +e
 
               build_cmd=(/home/ue4/UnrealEngine/Engine/Build/BatchFiles/Linux/Build.sh "$TARGET_NAME" Linux Development "$PWD/$PROJECT_FILE" -WaitMutex -NoHotReload -NoUBA -MaxParallelActions=4 -VeryVerbose)
@@ -668,6 +674,20 @@ jobs:
             echo "SonarCloud scan skipped: configure SONAR_TOKEN secret plus SONAR_PROJECT_KEY and SONAR_ORGANIZATION variables."
 
           fi
+
+      - name: Verify SonarCloud build-wrapper output
+
+        if: steps.runtime_guard.outputs.should_run == 'true' && github.event_name == 'workflow_dispatch' && inputs.static_analysis == 'true' && steps.sonar.outputs.enabled == 'true'
+
+        shell: bash
+
+        run: |
+
+          set -euo pipefail
+
+          test -s source/.sonar/bw-output/build-wrapper-dump.json
+
+          ls -lh source/.sonar/bw-output
 
       - name: Run SonarCloud advanced analysis
 
@@ -865,11 +885,11 @@ jobs:
 
           cat > "$body_file" <<EOF
 
-          Source: `${SOURCE_REPO}`
+          Source: ${SOURCE_REPO}
 
-          Run: `${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}`
+          Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
 
-          Build exit code: `${{ steps.build.outputs.exit_code }}`
+          Build exit code: ${{ steps.build.outputs.exit_code }}
 
           EOF
 
