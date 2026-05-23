@@ -61,49 +61,25 @@ jobs:
     steps:
 
       - name: Runtime skip when Linux build already running
-
         id: runtime_guard
-
         shell: bash
         continue-on-error: true
-
         env:
-
           GH_TOKEN: ${{ github.token }}
-
           WORKFLOW: Private Source Linux Build
-
           REPO: ${{ github.repository }}
-
         run: |
-
           set -euo pipefail
-
           echo "should_run=true" >> "$GITHUB_OUTPUT"
-          active="$(gh run list --repo "$REPO" --workflow "$WORKFLOW" --limit 20 --json databaseId,status,url,createdAt \
-
-            --jq '.[] | select((.status == "in_progress" or .status == "queued" or .status == "pending") and (.databaseId != ${{ github.run_id }})) | "\(.databaseId)\t\(.status)\t\(.url)\t\(.createdAt)"' | head -n 1 || true)"
-
+          active="$(gh run list --repo "$REPO" --workflow "$WORKFLOW" --limit 20 --json databaseId,status,url,createdAt             --jq '.[] | select((.status == "in_progress" or .status == "queued" or .status == "pending") and (.databaseId != ${{ github.run_id }})) | "\(.databaseId)	\(.status)	\(.url)	\(.createdAt)"' | head -n 1 || true)"
           if [[ -n "$active" ]]; then
-
             echo "Existing Linux build active: $active"
-
             echo "should_run=false" >> "$GITHUB_OUTPUT"
-
             {
-
               echo "active_build<<EOF"
-
               echo "$active"
-
               echo "EOF"
-
             } >> "$GITHUB_OUTPUT"
-
-          else
-
-            echo "should_run=true" >> "$GITHUB_OUTPUT"
-
           fi
 
       - name: Report skipped Linux build to private source issues
