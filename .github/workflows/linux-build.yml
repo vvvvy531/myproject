@@ -31,6 +31,7 @@ permissions:
   actions: read
 
   pull-requests: read
+  security-events: read
 
 env:
 
@@ -1029,6 +1030,18 @@ jobs:
           build-mode: manual
 
           queries: security-and-quality
+
+      - name: Login to GHCR for CodeQL build snapshot
+
+        uses: docker/login-action@v3
+
+        with:
+
+          registry: ghcr.io
+
+          username: ${{ secrets.GHCR_USERNAME }}
+
+          password: ${{ secrets.GHCR_TOKEN }}
 
       - name: Capture CodeQL build snapshot
 
