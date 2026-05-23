@@ -304,15 +304,15 @@ jobs:
           if (( next >= total )); then completed=true; fi
           title='CodeRabbit Full Scan State'
           body_file="$REPORT_DIR/full-scan-state-body.md"
-          cat > "$body_file" <<EOF
-# CodeRabbit Full Scan State
-
-Do not edit unless resetting CodeRabbit full scan progress.
-
-```json
-{"next_chunk_index":${next},"total_chunks":${total},"completed":${completed},"head_sha":"${{ steps.range.outputs.head_sha }}","base_sha":"${{ steps.range.outputs.base_sha }}","run_id":"${GITHUB_RUN_ID}","updated_at":"$(date -u +%FT%TZ)"}
-```
-EOF
+          {
+            echo '# CodeRabbit Full Scan State'
+            echo
+            echo 'Do not edit unless resetting CodeRabbit full scan progress.'
+            echo
+            echo '```json'
+            echo "{\"next_chunk_index\":${next},\"total_chunks\":${total},\"completed\":${completed},\"head_sha\":\"${{ steps.range.outputs.head_sha }}\",\"base_sha\":\"${{ steps.range.outputs.base_sha }}\",\"run_id\":\"${GITHUB_RUN_ID}\",\"updated_at\":\"$(date -u +%FT%TZ)\"}"
+            echo '```'
+          } > "$body_file"
           issue="$(gh issue list -R "$SOURCE_REPO" --state all --search "$title in:title" --json number,title --jq '.[] | select(.title == "CodeRabbit Full Scan State") | .number' | head -n 1)"
           if [[ -z "$issue" ]]; then gh issue create -R "$SOURCE_REPO" --title "$title" --body-file "$body_file" >/dev/null; else gh issue edit "$issue" -R "$SOURCE_REPO" --body-file "$body_file"; gh issue reopen "$issue" -R "$SOURCE_REPO" || true; fi
 
@@ -325,15 +325,15 @@ EOF
           set -euo pipefail
           title='CodeRabbit CLI State'
           body_file="$REPORT_DIR/state-issue-body.md"
-          cat > "$body_file" <<EOF
-# CodeRabbit CLI State
-
-Do not edit unless resetting CodeRabbit incremental range.
-
-```json
-{"last_completed_sha":"${{ steps.range.outputs.head_sha }}","base_sha":"${{ steps.range.outputs.base_sha }}","mode":"full-root-to-head-completed","run_id":"${GITHUB_RUN_ID}","updated_at":"$(date -u +%FT%TZ)"}
-```
-EOF
+          {
+            echo '# CodeRabbit CLI State'
+            echo
+            echo 'Do not edit unless resetting CodeRabbit incremental range.'
+            echo
+            echo '```json'
+            echo "{\"last_completed_sha\":\"${{ steps.range.outputs.head_sha }}\",\"base_sha\":\"${{ steps.range.outputs.base_sha }}\",\"mode\":\"full-root-to-head-completed\",\"run_id\":\"${GITHUB_RUN_ID}\",\"updated_at\":\"$(date -u +%FT%TZ)\"}"
+            echo '```'
+          } > "$body_file"
           issue="$(gh issue list -R "$SOURCE_REPO" --state all --search "$title in:title" --json number,title --jq '.[] | select(.title == "CodeRabbit CLI State") | .number' | head -n 1)"
           if [[ -z "$issue" ]]; then gh issue create -R "$SOURCE_REPO" --title "$title" --body-file "$body_file" >/dev/null; else gh issue edit "$issue" -R "$SOURCE_REPO" --body-file "$body_file"; gh issue reopen "$issue" -R "$SOURCE_REPO" || true; fi
 
@@ -345,4 +345,5 @@ EOF
           rm -rf source "$HOME/.coderabbit" "$REPORT_DIR"
           rm -f ~/.git-credentials
           git config --global --unset-all credential.helper || true
+
 
