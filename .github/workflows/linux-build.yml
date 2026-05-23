@@ -355,6 +355,22 @@ jobs:
 
           fi
 
+      - name: Initialize CodeQL for advanced review
+
+        if: steps.runtime_guard.outputs.should_run == 'true' && github.event_name == 'workflow_dispatch' && inputs.static_analysis == 'true'
+
+        uses: github/codeql-action/init@v4
+
+        with:
+
+          languages: cpp
+
+          source-root: source
+
+          build-mode: manual
+
+          queries: security-and-quality
+
       - name: Build Linux target in official UE container
 
         if: steps.runtime_guard.outputs.should_run == 'true'
@@ -389,7 +405,15 @@ jobs:
 
           df -h
 
+          env | grep -E '^(CODEQL_|SEMMLE_|LD_PRELOAD=)' > /tmp/codeql-docker.env || true
+
           docker run --rm --user root \
+
+            --env-file /tmp/codeql-docker.env \
+
+            -v /opt/hostedtoolcache/CodeQL:/opt/hostedtoolcache/CodeQL:ro \
+
+            -v /home/runner/work/_temp:/home/runner/work/_temp \
 
             -e PROJECT_FILE="$PROJECT_FILE" \
 
@@ -590,6 +614,76 @@ jobs:
           fi
 
           echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+
+      - name: Check SonarCloud configuration
+
+        if: steps.runtime_guard.outputs.should_run == 'true' && github.event_name == 'workflow_dispatch' && inputs.static_analysis == 'true'
+
+        id: sonar
+
+        shell: bash
+
+        env:
+
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+          SONAR_PROJECT_KEY: ${{ vars.SONAR_PROJECT_KEY }}
+
+          SONAR_ORGANIZATION: ${{ vars.SONAR_ORGANIZATION }}
+
+        run: |
+
+          set +x
+
+          if [[ -n "${SONAR_TOKEN:-}" && -n "${SONAR_PROJECT_KEY:-}" && -n "${SONAR_ORGANIZATION:-}" ]]; then
+
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+
+          else
+
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+
+            echo "SonarCloud scan skipped: configure SONAR_TOKEN secret plus SONAR_PROJECT_KEY and SONAR_ORGANIZATION variables."
+
+          fi
+
+      - name: Run SonarCloud advanced analysis
+
+        if: steps.runtime_guard.outputs.should_run == 'true' && github.event_name == 'workflow_dispatch' && inputs.static_analysis == 'true' && steps.sonar.outputs.enabled == 'true'
+
+        uses: SonarSource/sonarqube-scan-action@v8
+
+        env:
+
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+        with:
+
+          projectBaseDir: source
+
+          args: >
+
+            -Dsonar.projectKey=${{ vars.SONAR_PROJECT_KEY }}
+
+            -Dsonar.organization=${{ vars.SONAR_ORGANIZATION }}
+
+            -Dsonar.sources=.
+
+            -Dsonar.exclusions=**/Binaries/**,**/DerivedDataCache/**,**/Intermediate/**,**/Saved/**,**/.git/**,**/.github/**,**/graphify-out/**
+
+      - name: Run CodeQL advanced analysis
+
+        if: steps.runtime_guard.outputs.should_run == 'true' && github.event_name == 'workflow_dispatch' && inputs.static_analysis == 'true'
+
+        uses: github/codeql-action/analyze@v4
+
+        with:
+
+          upload: false
+
+          output: dist/codeql-sarif
+
+          category: private-source-advanced
 
       - name: Save sccache compiler cache to private builds repo
 
@@ -901,7 +995,7 @@ jobs:
 
     timeout-minutes: 60
 
-    if: github.event_name == 'workflow_dispatch' && inputs.static_analysis == 'true' && needs.build-linux.result == 'success'
+    if: false
 
     env:
 
