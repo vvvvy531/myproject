@@ -85,7 +85,7 @@ jobs:
 
       - name: Report skipped Linux build to private source issues
 
-        if: steps.runtime_guard.outputs.should_run == 'false'
+        if: false
 
         shell: bash
 
