@@ -45,6 +45,8 @@ jobs:
           if (( age < MIN_INTERVAL_SECONDS )); then
             echo "skip=true" >> "$GITHUB_OUTPUT"
             echo "skip_reason=Last successful CodeRabbit full run ${run_id} (${run_conclusion}/${run_event}) started ${age}s ago; minimum interval is ${MIN_INTERVAL_SECONDS}s." >> "$GITHUB_OUTPUT"
+            echo "Skipping because the last complete run is newer than ${MIN_INTERVAL_SECONDS}s; this intentional failure is not counted as a complete run."
+            exit 1
           fi
 
       - name: Checkout private source main
