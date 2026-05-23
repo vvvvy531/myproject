@@ -313,13 +313,29 @@ jobs:
           done < "$REPORT_DIR/selected-chunks.txt"
 
       - name: Update full scan state issue
-        if: success() && steps.interval_guard.outputs.skip != 'true' && steps.review.outputs.failed != '1'
+        if: success() && steps.interval_guard.outputs.skip != 'true'
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
         run: |
           set -euo pipefail
-          next='${{ steps.range.outputs.end_index }}'
+          next="$(python3 - <<'PY'
+          import pathlib
+          all_chunks=pathlib.Path('coderabbit-full-report/all-chunks.txt').read_text(encoding='utf-8', errors='replace').splitlines()
+          status={}
+          status_file=pathlib.Path('coderabbit-full-report/chunk-status.tsv')
+          if status_file.exists():
+            for row in status_file.read_text(encoding='utf-8', errors='replace').splitlines():
+              if '	' in row:
+                d,s=row.split('	',1); status[d]=s
+          for d,s in status.items():
+            if s.startswith('failure:'):
+              print(all_chunks.index(d) if d in all_chunks else int('${{ steps.range.outputs.end_index }}'))
+              break
+          else:
+            print(int('${{ steps.range.outputs.end_index }}'))
+          PY
+          )"
           total='${{ steps.range.outputs.total_chunks }}'
           completed=false
           if (( next >= total )); then completed=true; fi
