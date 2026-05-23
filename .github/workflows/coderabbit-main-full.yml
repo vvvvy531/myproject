@@ -1,20 +1,9 @@
 name: CodeRabbit Main Full Review
 
 on:
-  repository_dispatch:
-    types: [coderabbit-main-full]
   schedule:
-    # Poll every 15 minutes; runtime guard enforces at least 70 minutes between real runs.
-    # Schedule must live in this public default-branch workflow; private trigger schedules do not run until merged to the private default branch.
-    - cron: '*/15 * * * *'
-  workflow_dispatch:
-    inputs:
-      reset:
-        description: Reset full scan directory progress
-        required: false
-        default: "false"
-        type: choice
-        options: ["false", "true"]
+    # Run the full CodeRabbit main review once per hour.
+    - cron: '23 * * * *'
 
 permissions:
   contents: read
@@ -43,22 +32,6 @@ jobs:
         run: |
           set -euo pipefail
           echo "skip=false" >> "$GITHUB_OUTPUT"
-          if [[ "${{ github.event_name }}" != "schedule" ]]; then
-            exit 0
-          fi
-          now_epoch="$(date -u +%s)"
-          recent="$(gh run list --repo "$REPO" --workflow "$WORKFLOW" --limit 20 --json databaseId,status,createdAt,event \
-            --jq '.[] | select(.databaseId != ${{ github.run_id }} and (.status == "in_progress" or .status == "queued" or .status == "pending" or .status == "completed")) | [.databaseId,.status,.createdAt,.event] | @tsv' | head -n 1)"
-          if [[ -z "$recent" ]]; then
-            exit 0
-          fi
-          IFS=$'\t' read -r run_id run_status run_created run_event <<< "$recent"
-          run_epoch="$(date -u -d "$run_created" +%s)"
-          age=$((now_epoch - run_epoch))
-          if (( age < MIN_INTERVAL_SECONDS )); then
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            echo "skip_reason=Last CodeRabbit full run ${run_id} (${run_status}/${run_event}) started ${age}s ago; minimum interval is ${MIN_INTERVAL_SECONDS}s." >> "$GITHUB_OUTPUT"
-          fi
 
       - name: Checkout private source main
         if: steps.interval_guard.outputs.skip != 'true'
