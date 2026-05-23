@@ -424,29 +424,17 @@ jobs:
           env | grep -E '^(CODEQL_|SEMMLE_|LD_PRELOAD=)' > /tmp/codeql-docker.env || true
 
           docker run --rm --user root \
-
             --env-file /tmp/codeql-docker.env \
-
             -v /opt/hostedtoolcache/CodeQL:/opt/hostedtoolcache/CodeQL:ro \
-
             -v /home/runner/work/_temp:/home/runner/work/_temp \
-
             -e PROJECT_FILE="$PROJECT_FILE" \
-
             -e TARGET_NAME="$TARGET_NAME" \
-
             -e GITHUB_RUN_NUMBER="$GITHUB_RUN_NUMBER" \
-
             -v "$PWD/source:/workspace/source" \
-
             -v "$PWD/dist:/workspace/dist" \
-
             -v "$PWD/.sccache-cache:/workspace/.sccache-cache" \
-
             -w /workspace/source \
-
             "$UE_IMAGE" \
-
             bash -lc '
 
               set -o pipefail
@@ -498,23 +486,14 @@ jobs:
               mkdir -p "/home/ue4/.config/Unreal Engine/UnrealBuildTool" "/home/ue4/.config/Epic/UnrealBuildTool"
 
               printf "%s\n" \
-
                 "<?xml version=\"1.0\" encoding=\"utf-8\"?>" \
-
                 "<Configuration xmlns=\"https://www.unrealengine.com/BuildConfiguration\">" \
-
                 "  <BuildConfiguration>" \
-
                 "    <bUseUnityBuild>true</bUseUnityBuild>" \
-
                 "    <bUseAdaptiveUnityBuild>true</bUseAdaptiveUnityBuild>" \
-
                 "    <bAdaptiveUnityDisablesOptimizations>true</bAdaptiveUnityDisablesOptimizations>" \
-
                 "    <bAdaptiveUnityDisablesPCH>true</bAdaptiveUnityDisablesPCH>" \
-
                 "  </BuildConfiguration>" \
-
                 "</Configuration>" > /tmp/BuildConfiguration.xml
 
               cp /tmp/BuildConfiguration.xml "/home/ue4/.config/Unreal Engine/UnrealBuildTool/BuildConfiguration.xml"
@@ -757,9 +736,9 @@ jobs:
 
           if [[ -s dist/sccache-cache.tar.zst ]]; then
 
-            gh release view "$cache_tag" -R "$ARTIFACT_REPO" >/dev/null 2>&1 \
-
-              || gh release create "$cache_tag" -R "$ARTIFACT_REPO" --title "$cache_tag compiler cache" --notes "Rolling sccache compiler cache for Linux CI" --latest=false
+            if ! gh release view "$cache_tag" -R "$ARTIFACT_REPO" >/dev/null 2>&1; then
+              gh release create "$cache_tag" -R "$ARTIFACT_REPO" --title "$cache_tag compiler cache" --notes "Rolling sccache compiler cache for Linux CI" --latest=false
+            fi
 
             gh release upload "$cache_tag" -R "$ARTIFACT_REPO" dist/sccache-cache.tar.zst dist/sccache-cache-size.txt --clobber
 
@@ -823,9 +802,9 @@ jobs:
 
           if [[ -s dist/ue-build-products.tar.zst ]]; then
 
-            gh release view "$cache_tag" -R "$ARTIFACT_REPO" >/dev/null 2>&1 \
-
-              || gh release create "$cache_tag" -R "$ARTIFACT_REPO" --title "$cache_tag UE build products" --notes "Rolling UE Binaries/Intermediate cache for Linux CI" --latest=false
+            if ! gh release view "$cache_tag" -R "$ARTIFACT_REPO" >/dev/null 2>&1; then
+              gh release create "$cache_tag" -R "$ARTIFACT_REPO" --title "$cache_tag UE build products" --notes "Rolling UE Binaries/Intermediate cache for Linux CI" --latest=false
+            fi
 
             gh release upload "$cache_tag" -R "$ARTIFACT_REPO" dist/ue-build-products.tar.zst dist/ue-build-products-size.txt dist/ue-build-products-files.txt dist/ue-build-products-object-sample.txt --clobber
 
@@ -893,9 +872,9 @@ jobs:
 
           EOF
 
-          gh release view "$tag" -R "$ARTIFACT_REPO" >/dev/null 2>&1 \
-
-            || gh release create "$tag" -R "$ARTIFACT_REPO" --title "Linux build ${GITHUB_RUN_NUMBER}" --notes-file "$body_file" --latest=false
+          if ! gh release view "$tag" -R "$ARTIFACT_REPO" >/dev/null 2>&1; then
+            gh release create "$tag" -R "$ARTIFACT_REPO" --title "Linux build ${GITHUB_RUN_NUMBER}" --notes-file "$body_file" --latest=false
+          fi
 
           files=(
 
@@ -1194,17 +1173,11 @@ jobs:
           docker pull "$UE_IMAGE"
 
           docker run --rm --user root \
-
             -e PROJECT_FILE="$PROJECT_FILE" \
-
             -e TARGET_NAME="$TARGET_NAME" \
-
             -v "$PWD/source:/workspace/source" \
-
             -w /workspace/source \
-
             "$UE_IMAGE" \
-
             bash -lc '
 
               set -euo pipefail
@@ -1352,25 +1325,16 @@ jobs:
           set -euo pipefail
 
           gh release create "$ANALYSIS_TAG" \
-
             -R "$ARTIFACT_REPO" \
-
             --title "$ANALYSIS_TAG" \
-
             --notes "Weekly static analysis for $SOURCE_REPO at $(cat $REPORT_DIR/source-sha.txt). Public run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
-
             || true
 
           gh release upload "$ANALYSIS_TAG" \
-
             -R "$ARTIFACT_REPO" \
-
             "$REPORT_DIR/codeql-results.sarif" \
-
             "$REPORT_DIR/codeql-summary.md" \
-
             "$REPORT_DIR/source-sha.txt" \
-
             --clobber
 
       - name: Create or update private issue summary
