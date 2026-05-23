@@ -33,9 +33,25 @@ jobs:
           set -euo pipefail
           echo "skip=false" >> "$GITHUB_OUTPUT"
           now_epoch="$(date -u +%s)"
-          recent="$(gh run list --repo "$REPO" --workflow "$WORKFLOW" --limit 50 --json databaseId,status,conclusion,createdAt,event \
-            --jq '.[] | select(.databaseId != ${{ github.run_id }} and .status == "completed" and .conclusion == "success" and (.event == "schedule" or .event == "workflow_dispatch" or .event == "repository_dispatch")) | [.databaseId,.conclusion,.createdAt,.event] | @tsv' || true)"
-          recent="$(printf '%s\n' "$recent" | sed '/^$/d' | sort -k3,3r | sed -n '1p')"
+          candidate_runs="$(gh run list --repo "$REPO" --workflow "$WORKFLOW" --limit 50 --json databaseId,status,conclusion,createdAt,startedAt,updatedAt,event \
+            --jq '.[] | select(.databaseId != ${{ github.run_id }} and .status == "completed" and (.event == "schedule" or .event == "workflow_dispatch" or .event == "repository_dispatch")) | [.databaseId,.conclusion,.createdAt,.startedAt,.updatedAt,.event] | @tsv' || true)"
+          recent=""
+          while IFS=$'\t' read -r candidate_id candidate_conclusion candidate_created candidate_started candidate_updated candidate_event; do
+            [[ -n "$candidate_id" ]] || continue
+            if [[ "$candidate_conclusion" == "success" ]]; then
+              recent="$candidate_id	$candidate_conclusion	$candidate_created	$candidate_event"
+              break
+            fi
+            if [[ "$candidate_conclusion" == "failure" ]]; then
+              started_epoch="$(date -u -d "${candidate_started:-$candidate_created}" +%s)"
+              updated_epoch="$(date -u -d "$candidate_updated" +%s)"
+              duration=$((updated_epoch - started_epoch))
+              if (( duration >= 60 )); then
+                recent="$candidate_id	$candidate_conclusion	$candidate_created	$candidate_event"
+                break
+              fi
+            fi
+          done < <(printf '%s\n' "$candidate_runs" | sed '/^$/d' | sort -k3,3r)
           if [[ -z "$recent" ]]; then
             exit 0
           fi
@@ -44,8 +60,8 @@ jobs:
           age=$((now_epoch - run_epoch))
           if (( age < MIN_INTERVAL_SECONDS )); then
             echo "skip=true" >> "$GITHUB_OUTPUT"
-            echo "skip_reason=Last successful CodeRabbit full run ${run_id} (${run_conclusion}/${run_event}) started ${age}s ago; minimum interval is ${MIN_INTERVAL_SECONDS}s." >> "$GITHUB_OUTPUT"
-            echo "Skipping because the last complete run is newer than ${MIN_INTERVAL_SECONDS}s; this intentional failure is not counted as a complete run."
+            echo "skip_reason=Last counted CodeRabbit full run ${run_id} (${run_conclusion}/${run_event}) started ${age}s ago; minimum interval is ${MIN_INTERVAL_SECONDS}s. Failures under 60s are ignored as interval skips." >> "$GITHUB_OUTPUT"
+            echo "Skipping because the last counted run is newer than ${MIN_INTERVAL_SECONDS}s; this intentional failure is not counted as a complete run."
             exit 1
           fi
 
