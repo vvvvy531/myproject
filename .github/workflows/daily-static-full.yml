@@ -41,9 +41,9 @@ jobs:
           today="$(TZ=Asia/Shanghai date +%F)"
           echo "today=$today" >> "$GITHUB_OUTPUT"
 
-          report_json="$(TITLE="$REPORT_TITLE" gh issue list -R "$SOURCE_REPO" --state all --search "$REPORT_TITLE in:title" --json number,title,state --jq '.[] | select(.title == env.TITLE) | {number,state}' | head -n 1)"
-          report_state="$(printf '%s' "${report_json:-{}}" | jq -r '.state // "none"')"
-          report_number="$(printf '%s' "${report_json:-{}}" | jq -r '.number // ""')"
+          report_json="$(TITLE="$REPORT_TITLE" gh issue list -R "$SOURCE_REPO" --state all --search "$REPORT_TITLE in:title" --json number,title,state --jq '.[] | select(.title == env.TITLE) | {number,state}' | head -n 1 || true)"
+          report_state="$(printf '%s' "${report_json:-{}}" | jq -r '.state // "none"' 2>/dev/null || echo none)"
+          report_number="$(printf '%s' "${report_json:-{}}" | jq -r '.number // ""' 2>/dev/null || true)"
           echo "report_state=$report_state" >> "$GITHUB_OUTPUT"
           echo "report_number=$report_number" >> "$GITHUB_OUTPUT"
           if [[ "$report_state" == "OPEN" ]]; then
@@ -186,7 +186,7 @@ jobs:
             mv "$body_file.tmp" "$body_file"
           fi
 
-          issue="$(TITLE="$REPORT_TITLE" gh issue list -R "$SOURCE_REPO" --state all --search "$REPORT_TITLE in:title" --json number,title --jq '.[] | select(.title == env.TITLE) | .number' | head -n 1)"
+          issue="$(TITLE="$REPORT_TITLE" gh issue list -R "$SOURCE_REPO" --state all --search "$REPORT_TITLE in:title" --json number,title --jq '.[] | select(.title == env.TITLE) | .number' | head -n 1 || true)"
           if [[ -z "$issue" ]]; then
             gh issue create -R "$SOURCE_REPO" --title "$REPORT_TITLE" --body-file "$body_file" >/dev/null
           else
@@ -214,7 +214,7 @@ jobs:
             echo "{\"last_success_date\":\"$TODAY\",\"last_result\":\"success\",\"run_id\":\"$GITHUB_RUN_ID\",\"updated_at\":\"$(date -u +%FT%TZ)\"}"
             echo '```'
           } > "$body_file"
-          issue="$(gh issue list -R "$GITHUB_REPOSITORY" --state all --search "$STATE_TITLE in:title" --json number,title --jq '.[] | select(.title == env.STATE_TITLE) | .number' | head -n 1)"
+          issue="$(gh issue list -R "$GITHUB_REPOSITORY" --state all --search "$STATE_TITLE in:title" --json number,title --jq '.[] | select(.title == env.STATE_TITLE) | .number' | head -n 1 || true)"
           if [[ -z "$issue" ]]; then
             gh issue create -R "$GITHUB_REPOSITORY" --title "$STATE_TITLE" --body-file "$body_file" >/dev/null
           else
