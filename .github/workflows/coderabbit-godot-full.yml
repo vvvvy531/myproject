@@ -1,0 +1,346 @@
+name: CodeRabbit Godot Full Review
+
+on:
+  workflow_dispatch:
+    inputs:
+      reset:
+        description: Reset full scan directory progress
+        required: false
+        default: "false"
+        type: choice
+        options: ["false", "true"]
+
+permissions:
+  contents: read
+
+env:
+  SOURCE_REPO: vvvvy531/myproject-godot
+  ARTIFACT_REPO: vvvvy531/myproject-linux-builds
+  AUTH_TAG: coderabbit-auth
+  REPORT_DIR: coderabbit-full-report
+  MAX_CHUNKS_PER_RUN: "3"
+
+jobs:
+  coderabbit-full:
+    name: CodeRabbit full Godot history review
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Initialize run guard
+        id: interval_guard
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout private Godot main
+        if: steps.interval_guard.outputs.skip != 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.SOURCE_REPO }}
+          token: ${{ secrets.PRIVATE_SOURCE_PAT }}
+          ref: main
+          fetch-depth: 0
+          lfs: false
+          submodules: recursive
+          path: source
+          persist-credentials: false
+
+      - name: Install CodeRabbit CLI
+        if: steps.interval_guard.outputs.skip != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          export CI=1
+          curl -fsSL https://cli.coderabbit.ai/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Restore CodeRabbit auth
+        if: steps.interval_guard.outputs.skip != 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.LINUX_BUILDS_PAT }}
+          CODERABBIT_AUTH_PASSWORD: ${{ secrets.CODERABBIT_AUTH_PASSWORD }}
+        run: |
+          set -euo pipefail
+          gh release download "$AUTH_TAG" -R "$ARTIFACT_REPO" -p coderabbit-auth.tar.gz.enc -D /tmp --clobber
+          openssl enc -d -aes-256-cbc -pbkdf2 -in /tmp/coderabbit-auth.tar.gz.enc -out /tmp/coderabbit-auth.tar.gz -pass pass:"$CODERABBIT_AUTH_PASSWORD"
+          tar -xzf /tmp/coderabbit-auth.tar.gz -C "$HOME"
+          rm -f /tmp/coderabbit-auth.tar.gz /tmp/coderabbit-auth.tar.gz.enc
+          chmod 700 "$HOME/.coderabbit" || true
+
+      - name: Determine full history range and chunk window
+        if: steps.interval_guard.outputs.skip != 'true'
+        id: range
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
+          RESET_SCAN: ${{ inputs.reset || 'false' }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$REPORT_DIR"
+          base_sha="$(git -C source rev-list --max-parents=0 HEAD | tail -n 1)"
+          head_sha="$(git -C source rev-parse HEAD)"
+          dirs=(
+            "native/rust_kernel/src"
+            "native/rust_kernel/tests"
+            "native/rust_kernel/testdata"
+            "native/include/map_runtime"
+            "native/include/rust"
+            "native/src/0-Common"
+            "native/src/1-Definitions"
+            "native/src/2-Domain"
+            "native/src/3-Application"
+            "native/src/4-Presentation"
+            "native/tests/0-common"
+            "native/tests/1-definitions"
+            "native/tests/2-domain"
+            "native/tests/3-application"
+            "native/tests/4-presentation"
+            "native/tests/smoke"
+            "scenes/gameplay"
+            "scenes/world"
+            "tools/cdda_diff"
+            "tools/ue_import"
+            "docs/task-chains/mapgenfeature"
+            "docs/superpowers"
+            ".github/workflows"
+          )
+          printf '%s\n' "${dirs[@]}" > "$REPORT_DIR/all-chunks.txt"
+          next_index=0
+          state_title='CodeRabbit Full Scan State'
+          issue="$(gh issue list -R "$SOURCE_REPO" --state all --search "$state_title in:title" --json number,title --jq '.[] | select(.title == "CodeRabbit Full Scan State") | .number' | head -n 1)"
+          if [[ "$RESET_SCAN" != "true" && -n "$issue" ]]; then
+            gh issue view "$issue" -R "$SOURCE_REPO" --json body --jq .body > /tmp/coderabbit-full-scan-state.md || true
+            next_index="$(python3 - <<'PY'
+          import json,re,pathlib
+          s=pathlib.Path('/tmp/coderabbit-full-scan-state.md').read_text(errors='ignore') if pathlib.Path('/tmp/coderabbit-full-scan-state.md').exists() else ''
+          m=re.search(r'```json\s*(\{.*?\})\s*```', s, re.S)
+          print(json.loads(m.group(1)).get('next_chunk_index',0) if m else 0)
+          PY
+          )"
+          fi
+          total="${#dirs[@]}"
+          if (( next_index >= total )); then next_index=0; fi
+          gh issue list -R "$SOURCE_REPO" --state open --limit 200 --json title --jq '.[].title' > "$REPORT_DIR/open-issue-titles.txt"
+          : > "$REPORT_DIR/selected-chunks.txt"
+          : > "$REPORT_DIR/skipped-open-chunks.txt"
+          selected=0
+          cursor=$next_index
+          checked=0
+          while (( checked < total && selected < MAX_CHUNKS_PER_RUN )); do
+            dir="${dirs[$cursor]}"
+            title="CodeRabbit Review: ${dir}"
+            if grep -Fxq "$title" "$REPORT_DIR/open-issue-titles.txt"; then
+              printf '%s\n' "$dir" >> "$REPORT_DIR/skipped-open-chunks.txt"
+            else
+              printf '%s\n' "$dir" >> "$REPORT_DIR/selected-chunks.txt"
+              selected=$((selected + 1))
+            fi
+            cursor=$(((cursor + 1) % total))
+            checked=$((checked + 1))
+          done
+          end_index=$cursor
+          echo "base_sha=$base_sha" >> "$GITHUB_OUTPUT"
+          echo "head_sha=$head_sha" >> "$GITHUB_OUTPUT"
+          echo "start_index=$next_index" >> "$GITHUB_OUTPUT"
+          echo "end_index=$end_index" >> "$GITHUB_OUTPUT"
+          echo "total_chunks=$total" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "$base_sha" > "$REPORT_DIR/base-sha.txt"
+          printf '%s\n' "$head_sha" > "$REPORT_DIR/head-sha.txt"
+          printf '%s\n' full-root-to-head-window > "$REPORT_DIR/mode.txt"
+
+      - name: Run CodeRabbit CLI full review chunk window
+        if: steps.interval_guard.outputs.skip != 'true'
+        id: review
+        shell: bash
+        working-directory: source
+        run: |
+          set +x
+          mkdir -p "../$REPORT_DIR/chunks" "../$REPORT_DIR/errors"
+          : > "../$REPORT_DIR/chunk-status.tsv"
+          failed=0
+          while IFS= read -r dir; do
+            [[ -n "$dir" && -e "$dir" ]] || continue
+            safe="$(printf '%s' "$dir" | tr '/.' '__')"
+            echo "Review chunk: $dir"
+            if coderabbit review --agent --base-commit "${{ steps.range.outputs.base_sha }}" --dir "$dir" > "../$REPORT_DIR/chunks/${safe}.jsonl" 2> "../$REPORT_DIR/errors/${safe}.stderr"; then
+              printf '%s\tsuccess\n' "$dir" >> "../$REPORT_DIR/chunk-status.tsv"
+            else
+              code=$?
+              printf '%s\tfailure:%s\n' "$dir" "$code" >> "../$REPORT_DIR/chunk-status.tsv"
+              failed=1
+              tail -n 80 "../$REPORT_DIR/errors/${safe}.stderr" > "../$REPORT_DIR/errors/${safe}.stderr.tail" || true
+            fi
+          done < "../$REPORT_DIR/selected-chunks.txt"
+          cat ../$REPORT_DIR/chunks/*.jsonl > "../$REPORT_DIR/coderabbit-review.jsonl" 2>/dev/null || : > "../$REPORT_DIR/coderabbit-review.jsonl"
+          echo "failed=$failed" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Summarize findings
+        if: success() && steps.interval_guard.outputs.skip != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json,pathlib,collections
+          report=pathlib.Path('coderabbit-full-report'); findings=[]; src=report/'coderabbit-review.jsonl'
+          if src.exists():
+            for line in src.read_text(encoding='utf-8',errors='replace').splitlines():
+              try: obj=json.loads(line)
+              except Exception: continue
+              if obj.get('type')=='finding': findings.append(obj)
+          c=collections.Counter(f.get('severity','unknown') for f in findings)
+          status=(report/'chunk-status.tsv').read_text(encoding='utf-8', errors='replace') if (report/'chunk-status.tsv').exists() else ''
+          selected=(report/'selected-chunks.txt').read_text(encoding='utf-8', errors='replace') if (report/'selected-chunks.txt').exists() else ''
+          lines=['# CodeRabbit full Godot history review','',f'- Base/root: {(report/"base-sha.txt").read_text().strip()}',f'- Head: {(report/"head-sha.txt").read_text().strip()}',f'- Chunk window: {selected.strip().replace(chr(10), ", ")}',f'- Findings this run: {len(findings)}',f'- Critical: {c.get("critical",0)}',f'- Major: {c.get("major",0)}',f'- Minor: {c.get("minor",0)}','','## Chunk status','']
+          for row in status.splitlines():
+            if '\t' in row:
+              d,s=row.split('\t',1); lines.append(f'- `{d}`: {s}')
+          lines += ['', '## Error tails', '']
+          errdir=report/'errors'
+          if errdir.exists():
+            for p in sorted(errdir.glob('*.stderr.tail')):
+              text=p.read_text(encoding='utf-8', errors='replace').strip()
+              if text:
+                lines += [f'### `{p.name}`', '```text', text[-4000:], '```', '']
+          lines += ['', '## Top findings', '']
+          seen=set()
+          for f in findings:
+            key=(f.get('severity'),f.get('fileName'),str(f.get('message') or f.get('title') or f.get('codegenInstructions') or '')[:120])
+            if key in seen: continue
+            seen.add(key)
+            lines.append(f'- **{f.get("severity","unknown")}** `{f.get("fileName","")}`: {str(f.get("message") or f.get("title") or f.get("codegenInstructions") or "").replace(chr(10)," ")[:300]}')
+            if len(seen) >= 80: break
+          (report/'coderabbit-summary.md').write_text('\n'.join(lines)+'\n',encoding='utf-8')
+          PY
+
+      - name: Upsert per-directory report issues in source repo
+        if: success() && steps.interval_guard.outputs.skip != 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json,pathlib,collections
+          report=pathlib.Path('coderabbit-full-report')
+          findings=[]
+          src=report/'coderabbit-review.jsonl'
+          if src.exists():
+            for line in src.read_text(encoding='utf-8', errors='replace').splitlines():
+              try: obj=json.loads(line)
+              except Exception: continue
+              if obj.get('type')=='finding': findings.append(obj)
+          statuses={}
+          status_file=report/'chunk-status.tsv'
+          if status_file.exists():
+            for row in status_file.read_text(encoding='utf-8', errors='replace').splitlines():
+              if '\t' in row:
+                d,s=row.split('\t',1); statuses[d]=s
+          selected=(report/'selected-chunks.txt').read_text(encoding='utf-8', errors='replace').splitlines() if (report/'selected-chunks.txt').exists() else []
+          body_dir=report/'issue-bodies'; body_dir.mkdir(parents=True, exist_ok=True)
+          for dir in selected:
+            safe=dir.replace('/','_').replace('.','_')
+            dir_findings=[f for f in findings if str(f.get('fileName','')).startswith(dir+'/') or str(f.get('fileName',''))==dir]
+            counts=collections.Counter(f.get('severity','unknown') for f in dir_findings)
+            err=report/'errors'/(safe+'.stderr.tail')
+            err_text=err.read_text(encoding='utf-8', errors='replace').strip() if err.exists() else ''
+            if not dir_findings and not err_text:
+              continue
+            lines=[f'# CodeRabbit Review: {dir}','',f'- Public run: {__import__("os").environ.get("GITHUB_SERVER_URL")}/{__import__("os").environ.get("GITHUB_REPOSITORY")}/actions/runs/{__import__("os").environ.get("GITHUB_RUN_ID")}',f'- Source repo: {__import__("os").environ.get("SOURCE_REPO")}',f'- Directory: `{dir}`',f'- Status: {statuses.get(dir,"not-run")}',f'- Findings: {len(dir_findings)}',f'- Critical: {counts.get("critical",0)}',f'- Major: {counts.get("major",0)}',f'- Minor: {counts.get("minor",0)}','','## Error tail','']
+            if err_text:
+              lines += ['```text', err_text[-4000:], '```']
+            lines += ['', '## Findings', '']
+            for f in dir_findings[:120]:
+              msg=str(f.get('message') or f.get('title') or f.get('codegenInstructions') or '').replace('\n',' ')[:500]
+              lines.append(f'- **{f.get("severity","unknown")}** `{f.get("fileName","")}`: {msg}')
+            (body_dir/(safe+'.md')).write_text('\n'.join(lines)+'\n', encoding='utf-8')
+          PY
+          while IFS= read -r dir; do
+            [[ -n "$dir" ]] || continue
+            safe="$(printf '%s' "$dir" | tr '/.' '___')"
+            title="CodeRabbit Review: ${dir}"
+            body_file="$REPORT_DIR/issue-bodies/${safe}.md"
+            [[ -s "$body_file" ]] || continue
+            issue="$(TITLE="$title" gh issue list -R "$SOURCE_REPO" --state all --search "$title in:title" --json number,title --jq '.[] | select(.title == env.TITLE) | .number' | head -n 1)"
+            if [[ -z "$issue" ]]; then
+              gh issue create -R "$SOURCE_REPO" --title "$title" --body-file "$body_file" >/dev/null
+            else
+              gh issue edit "$issue" -R "$SOURCE_REPO" --body-file "$body_file"
+              gh issue reopen "$issue" -R "$SOURCE_REPO" || true
+            fi
+          done < "$REPORT_DIR/selected-chunks.txt"
+
+      - name: Update full scan state issue
+        if: success() && steps.interval_guard.outputs.skip != 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
+        run: |
+          set -euo pipefail
+          next="$(python3 - <<'PY'
+          import pathlib
+          all_chunks=pathlib.Path('coderabbit-full-report/all-chunks.txt').read_text(encoding='utf-8', errors='replace').splitlines()
+          status={}
+          status_file=pathlib.Path('coderabbit-full-report/chunk-status.tsv')
+          if status_file.exists():
+            for row in status_file.read_text(encoding='utf-8', errors='replace').splitlines():
+              if '	' in row:
+                d,s=row.split('	',1); status[d]=s
+          for d,s in status.items():
+            if s.startswith('failure:'):
+              print(all_chunks.index(d) if d in all_chunks else int('${{ steps.range.outputs.end_index }}'))
+              break
+          else:
+            print(int('${{ steps.range.outputs.end_index }}'))
+          PY
+          )"
+          total='${{ steps.range.outputs.total_chunks }}'
+          completed=false
+          if (( next >= total )); then completed=true; fi
+          title='CodeRabbit Full Scan State'
+          body_file="$REPORT_DIR/full-scan-state-body.md"
+          {
+            echo '# CodeRabbit Full Scan State'
+            echo
+            echo 'Do not edit unless resetting CodeRabbit full scan progress.'
+            echo
+            echo '```json'
+            echo "{\"next_chunk_index\":${next},\"total_chunks\":${total},\"completed\":${completed},\"head_sha\":\"${{ steps.range.outputs.head_sha }}\",\"base_sha\":\"${{ steps.range.outputs.base_sha }}\",\"run_id\":\"${GITHUB_RUN_ID}\",\"updated_at\":\"$(date -u +%FT%TZ)\"}"
+            echo '```'
+          } > "$body_file"
+          issue="$(gh issue list -R "$SOURCE_REPO" --state all --search "$title in:title" --json number,title --jq '.[] | select(.title == "CodeRabbit Full Scan State") | .number' | head -n 1)"
+          if [[ -z "$issue" ]]; then gh issue create -R "$SOURCE_REPO" --title "$title" --body-file "$body_file" >/dev/null; else gh issue edit "$issue" -R "$SOURCE_REPO" --body-file "$body_file"; gh issue reopen "$issue" -R "$SOURCE_REPO" || true; fi
+
+      - name: Seed incremental state when full scan completes
+        if: success() && steps.interval_guard.outputs.skip != 'true' && steps.review.outputs.failed != '1' && steps.range.outputs.end_index == steps.range.outputs.total_chunks
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
+        run: |
+          set -euo pipefail
+          title='CodeRabbit CLI State'
+          body_file="$REPORT_DIR/state-issue-body.md"
+          {
+            echo '# CodeRabbit CLI State'
+            echo
+            echo 'Do not edit unless resetting CodeRabbit incremental range.'
+            echo
+            echo '```json'
+            echo "{\"last_completed_sha\":\"${{ steps.range.outputs.head_sha }}\",\"base_sha\":\"${{ steps.range.outputs.base_sha }}\",\"mode\":\"full-root-to-head-completed\",\"run_id\":\"${GITHUB_RUN_ID}\",\"updated_at\":\"$(date -u +%FT%TZ)\"}"
+            echo '```'
+          } > "$body_file"
+          issue="$(gh issue list -R "$SOURCE_REPO" --state all --search "$title in:title" --json number,title --jq '.[] | select(.title == "CodeRabbit CLI State") | .number' | head -n 1)"
+          if [[ -z "$issue" ]]; then gh issue create -R "$SOURCE_REPO" --title "$title" --body-file "$body_file" >/dev/null; else gh issue edit "$issue" -R "$SOURCE_REPO" --body-file "$body_file"; gh issue reopen "$issue" -R "$SOURCE_REPO" || true; fi
+
+      - name: Cleanup
+        if: success() && steps.interval_guard.outputs.skip != 'true'
+        shell: bash
+        run: |
+          set +x
+          rm -rf source "$HOME/.coderabbit" "$REPORT_DIR"
+          rm -f ~/.git-credentials
+          git config --global --unset-all credential.helper || true
+
+
