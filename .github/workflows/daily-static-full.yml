@@ -133,10 +133,54 @@ jobs:
             echo
             echo "## Notes"
             echo
-            echo "MegaLinter ran with generated/build/cache folders excluded. No artifacts uploaded. External reporters disabled. See public workflow summary/log for raw tool output."
+            echo "MegaLinter ran with generated/build/cache folders excluded. No artifacts uploaded. External reporters disabled."
             echo
             echo "This issue is the unresolved-work gate: leave it open to skip future scans; close it after resolving/reviewing findings so the next scheduled run overwrites and reopens it."
+            echo
+            echo "## MegaLinter report"
+            echo
           } > "$body_file"
+
+          report_root=""
+          for d in megalinter-reports source/megalinter-reports /tmp/lint/megalinter-reports; do
+            if [[ -d "$d" ]]; then report_root="$d"; break; fi
+          done
+          if [[ -n "$report_root" ]]; then
+            echo "- Report dir: \`$report_root\`" >> "$body_file"
+            echo >> "$body_file"
+            mapfile -t report_files < <(find "$report_root" -maxdepth 3 -type f \(
+              -name '*.md' -o -name '*.txt' -o -name '*.log' -o -name '*.json' \) | sort | head -n 20)
+            if (( ${#report_files[@]} == 0 )); then
+              echo "No report files found under \`$report_root\`." >> "$body_file"
+            else
+              echo "### Report files" >> "$body_file"
+              for f in "${report_files[@]}"; do echo "- \`$f\`" >> "$body_file"; done
+              echo >> "$body_file"
+              for f in "${report_files[@]}"; do
+                case "$f" in
+                  *.md|*.txt|*.log)
+                    echo "### \`$f\`" >> "$body_file"
+                    echo '```text' >> "$body_file"
+                    sed -n '1,220p' "$f" | sed -e 's/```/` ` `/g' >> "$body_file"
+                    echo '```' >> "$body_file"
+                    echo >> "$body_file"
+                    ;;
+                esac
+              done
+            fi
+          else
+            echo "No MegaLinter report directory found. Check public run logs." >> "$body_file"
+          fi
+
+          if [[ $(wc -c < "$body_file") -gt 60000 ]]; then
+            head -c 58000 "$body_file" > "$body_file.tmp"
+            {
+              echo
+              echo
+              echo "_Report truncated to fit GitHub issue body._"
+            } >> "$body_file.tmp"
+            mv "$body_file.tmp" "$body_file"
+          fi
           issue="$(TITLE="$REPORT_TITLE" gh issue list -R "$SOURCE_REPO" --state all --search "$REPORT_TITLE in:title" --json number,title --jq '.[] | select(.title == env.TITLE) | .number' | head -n 1)"
           if [[ -z "$issue" ]]; then
             gh issue create -R "$SOURCE_REPO" --title "$REPORT_TITLE" --body-file "$body_file" >/dev/null
