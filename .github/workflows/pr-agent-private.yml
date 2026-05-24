@@ -149,11 +149,24 @@ jobs:
             -f description="Review failed" \
             -f target_url="$RUN_URL"
 
-      - name: Cleanup checkout
+      - name: Cleanup local runner state
         if: always()
         shell: bash
         run: |
+          set +e
           set +x
           rm -rf source
-          rm -f ~/.git-credentials
+          if [[ -n "${GITHUB_WORKSPACE:-}" && "$GITHUB_WORKSPACE" == *"/_work/"* ]]; then
+            rm -rf "$GITHUB_WORKSPACE"/*
+            rm -rf "$GITHUB_WORKSPACE"/.[!.]* "$GITHUB_WORKSPACE"/..?* 2>/dev/null || true
+          fi
+          if [[ -n "${RUNNER_TEMP:-}" && "$RUNNER_TEMP" == *"/_work/"* ]]; then
+            rm -rf "$RUNNER_TEMP"/*
+            rm -rf "$RUNNER_TEMP"/.[!.]* "$RUNNER_TEMP"/..?* 2>/dev/null || true
+          fi
+          if [[ -n "${RUNNER_TOOL_CACHE:-}" && "$RUNNER_TOOL_CACHE" == *"/_work/"* ]]; then
+            rm -rf "$RUNNER_TOOL_CACHE"/* || true
+          fi
+          rm -rf ~/.claude/projects ~/.claude/sessions ~/.claude/statsig ~/.claude/todos || true
+          rm -f ~/.bash_history ~/.zsh_history ~/.git-credentials || true
           git config --global --unset-all credential.helper || true
