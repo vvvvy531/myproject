@@ -15,7 +15,7 @@ env:
   SOURCE_REPO: vvvvy531/myproject-source
   REPORT_DIR: daily-static-report
   STATE_TITLE: Daily Static Full Scan State
-  REPORT_TITLE: Daily Static Review: Latest
+  REPORT_TITLE: "Daily Static Review: Latest"
 
 jobs:
   daily-static-full:
