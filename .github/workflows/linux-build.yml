@@ -550,7 +550,16 @@ jobs:
               /opt/sccache/sccache --start-server || true
 
               if [[ -x .sonar/build-wrapper-linux-x86/build-wrapper-linux-x86-64 ]]; then
-                echo "Advanced analysis: removing UE incremental outputs before build-wrapper capture"
+                echo "Advanced analysis: disabling sccache and removing UE incremental outputs before build-wrapper capture"
+                if [[ -n "${toolchain_bin:-}" ]]; then
+                  for compiler in clang clang++; do
+                    if [[ -e "$toolchain_bin/$compiler.real" ]]; then
+                      mv -f "$toolchain_bin/$compiler.real" "$toolchain_bin/$compiler"
+                    fi
+                  done
+                fi
+                export SCCACHE_DISABLE=1
+                unset SCCACHE_DIR SCCACHE_BASEDIRS SCCACHE_CACHE_SIZE UE_SCCACHE_EXECUTABLE CCACHE_EXEC
                 rm -rf Binaries Intermediate Saved/UnrealBuildTool
                 find Plugins -type d \( -name Binaries -o -name Intermediate \) -prune -exec rm -rf {} + 2>/dev/null || true
               fi
