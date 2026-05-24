@@ -423,6 +423,9 @@ jobs:
 
           env | grep -E '^(CODEQL_|SEMMLE_|LD_PRELOAD=)' > /tmp/codeql-docker.env || true
 
+          HOST_SOURCE="$PWD/source"
+          HOST_DIST="$PWD/dist"
+
           docker run --rm --user root \
             --env-file /tmp/codeql-docker.env \
             -v /opt/hostedtoolcache/CodeQL:/opt/hostedtoolcache/CodeQL:ro \
@@ -430,10 +433,10 @@ jobs:
             -e PROJECT_FILE="$PROJECT_FILE" \
             -e TARGET_NAME="$TARGET_NAME" \
             -e GITHUB_RUN_NUMBER="$GITHUB_RUN_NUMBER" \
-            -v "$PWD/source:/workspace/source" \
-            -v "$PWD/dist:/workspace/dist" \
+            -v "$HOST_SOURCE:$HOST_SOURCE" \
+            -v "$HOST_DIST:$HOST_DIST" \
             -v "$PWD/.sccache-cache:/workspace/.sccache-cache" \
-            -w /workspace/source \
+            -w "$HOST_SOURCE" \
             "$UE_IMAGE" \
             bash -lc '
 
@@ -506,7 +509,7 @@ jobs:
 
               touch -d "2000-01-01 00:00:00 UTC" "/home/ue4/.config/Unreal Engine/UnrealBuildTool/BuildConfiguration.xml" "/home/ue4/.config/Epic/UnrealBuildTool/BuildConfiguration.xml" || true
 
-              export SCCACHE_DIR=/workspace/.sccache-cache SCCACHE_CACHE_SIZE=8G SCCACHE_BASEDIRS=/workspace/source SCCACHE_IGNORE_SERVER_IO_ERROR=1
+              export SCCACHE_DIR=/workspace/.sccache-cache SCCACHE_CACHE_SIZE=8G SCCACHE_BASEDIRS="$PWD" SCCACHE_IGNORE_SERVER_IO_ERROR=1
 
               printf "%s" "IyEvdXNyL2Jpbi9lbnYgcHl0aG9uMwppbXBvcnQgb3MsIHNobGV4LCBzeXMKCmRlZiBleHBhbmRfYXJncyhhcmdzLCBzZWVuPU5vbmUpOgogICAgaWYgc2VlbiBpcyBOb25lOgogICAgICAgIHNlZW4gPSBzZXQoKQogICAgb3V0ID0gW10KICAgIGZvciBhcmcgaW4gYXJnczoKICAgICAgICBpZiBhcmcuc3RhcnRzd2l0aCgnQCcpIGFuZCBsZW4oYXJnKSA+IDE6CiAgICAgICAgICAgIHJzcCA9IGFyZ1sxOl0uc3RyaXAoJyInKS5zdHJpcCgiJyIpCiAgICAgICAgICAgIHJzcF9hYnMgPSBvcy5wYXRoLmFic3BhdGgocnNwKQogICAgICAgICAgICBpZiByc3BfYWJzIG5vdCBpbiBzZWVuOgogICAgICAgICAgICAgICAgdHJ5OgogICAgICAgICAgICAgICAgICAgIHNlZW4uYWRkKHJzcF9hYnMpCiAgICAgICAgICAgICAgICAgICAgd2l0aCBvcGVuKHJzcCwgJ3InLCBlbmNvZGluZz0ndXRmLTgnKSBhcyBmaDoKICAgICAgICAgICAgICAgICAgICAgICAgb3V0LmV4dGVuZChleHBhbmRfYXJncyhzaGxleC5zcGxpdChmaC5yZWFkKCksIHBvc2l4PVRydWUpLCBzZWVuKSkKICAgICAgICAgICAgICAgICAgICBjb250aW51ZQogICAgICAgICAgICAgICAgZXhjZXB0IEV4Y2VwdGlvbjoKICAgICAgICAgICAgICAgICAgICBwYXNzCiAgICAgICAgb3V0LmFwcGVuZChhcmcpCiAgICByZXR1cm4gb3V0Cgpvcy5leGVjdignL29wdC9zY2NhY2hlL3NjY2FjaGUnLCBbJ3NjY2FjaGUnXSArIGV4cGFuZF9hcmdzKHN5cy5hcmd2WzE6XSkp" | base64 -d > /usr/local/bin/sccache-rsp-wrapper
 
@@ -1170,13 +1173,15 @@ jobs:
 
           set -euo pipefail
 
+          HOST_SOURCE="$PWD/source"
+
           docker pull "$UE_IMAGE"
 
           docker run --rm --user root \
             -e PROJECT_FILE="$PROJECT_FILE" \
             -e TARGET_NAME="$TARGET_NAME" \
-            -v "$PWD/source:/workspace/source" \
-            -w /workspace/source \
+            -v "$HOST_SOURCE:$HOST_SOURCE" \
+            -w "$HOST_SOURCE" \
             "$UE_IMAGE" \
             bash -lc '
 
