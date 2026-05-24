@@ -678,6 +678,8 @@ jobs:
 
           test -s source/.sonar/bw-output/build-wrapper-dump.json
 
+          test -s source/.sonar/bw-output/compile_commands.json
+
           ls -lh source/.sonar/bw-output
 
       - name: Run SonarCloud advanced analysis
@@ -702,7 +704,7 @@ jobs:
 
             -Dsonar.sources=.
 
-            -Dsonar.cfamily.build-wrapper-output=source/.sonar/bw-output
+            -Dsonar.cfamily.compile-commands=.sonar/bw-output/compile_commands.json
 
             -Dsonar.exclusions=**/Binaries/**,**/DerivedDataCache/**,**/Intermediate/**,**/Saved/**,**/.git/**,**/.github/**,**/graphify-out/**,**/.sonar/build-wrapper-linux-x86/**
 
