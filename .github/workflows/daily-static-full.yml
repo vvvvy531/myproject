@@ -95,7 +95,7 @@ jobs:
           set +e
           mkdir -p "$REPORT_DIR/megalinter-reports"
           docker run --rm \
-            -v "$PWD/source:/tmp/lint:ro" \
+            -v "$PWD/source:/tmp/lint" \
             -v "$PWD/$REPORT_DIR/megalinter-reports:/tmp/lint/megalinter-reports" \
             -e DEFAULT_WORKSPACE=/tmp/lint \
             -e VALIDATE_ALL_CODEBASE=true \
@@ -230,3 +230,4 @@ jobs:
           rm -rf source "$REPORT_DIR"
           rm -f ~/.git-credentials
           git config --global --unset-all credential.helper || true
+
