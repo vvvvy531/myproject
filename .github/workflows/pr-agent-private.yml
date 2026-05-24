@@ -115,9 +115,13 @@ jobs:
           config.custom_model_max_tokens: '128000'
           config.ai_timeout: '300'
           config.verbosity_level: '1'
-          pr_reviewer.extra_instructions: Focus on Linux build safety, Unreal Engine build issues, CI/CD, release artifacts, shell commands, secrets leakage, permissions, and supply-chain risks. Do not repeat large code blocks.
         run: |
           set +x
+          if [[ "$SOURCE_REPO" == "vvvvy531/myproject-godot" ]]; then
+            export pr_reviewer.extra_instructions="Focus on Godot 4.x project safety, Rust kernel correctness, GDExtension ABI/build issues, Windows export artifacts, scene/resource paths, CI/CD, shell commands, secrets leakage, permissions, and supply-chain risks. Do not repeat large code blocks."
+          else
+            export pr_reviewer.extra_instructions="Focus on Linux build safety, Unreal Engine build issues, CI/CD, release artifacts, shell commands, secrets leakage, permissions, and supply-chain risks. Do not repeat large code blocks."
+          fi
           pr-agent --pr_url "$PR_URL" review
 
 
