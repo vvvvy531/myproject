@@ -1,0 +1,156 @@
+name: Daily Static Full Review
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: daily-static-full
+  cancel-in-progress: false
+
+env:
+  SOURCE_REPO: vvvvy531/myproject-source
+  REPORT_DIR: daily-static-report
+  STATE_TITLE: Daily Static Full Scan State
+  REPORT_TITLE: Daily Static Review: Latest
+
+jobs:
+  daily-static-full:
+    name: Daily static full codebase review
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Check daily state
+        id: state
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          today="$(TZ=Asia/Shanghai date +%F)"
+          echo "today=$today" >> "$GITHUB_OUTPUT"
+          issue="$(gh issue list -R "$GITHUB_REPOSITORY" --state all --search "$STATE_TITLE in:title" --json number,title --jq '.[] | select(.title == env.STATE_TITLE) | .number' | head -n 1)"
+          if [[ -n "$issue" ]]; then
+            gh issue view "$issue" -R "$GITHUB_REPOSITORY" --json body --jq .body > /tmp/daily-static-state.md || true
+          fi
+          last="$(python3 - <<'PY'
+          import json,re,pathlib
+          p=pathlib.Path('/tmp/daily-static-state.md')
+          s=p.read_text(errors='ignore') if p.exists() else ''
+          m=re.search(r'```json\s*(\{.*?\})\s*```', s, re.S)
+          print(json.loads(m.group(1)).get('last_success_date','') if m else '')
+          PY
+          )"
+          if [[ "$last" == "$today" ]]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "Already completed today: $today"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout private source main
+        if: steps.state.outputs.skip != 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.SOURCE_REPO }}
+          token: ${{ secrets.PRIVATE_SOURCE_PAT }}
+          ref: main
+          fetch-depth: 0
+          lfs: false
+          submodules: recursive
+          path: source
+          persist-credentials: false
+
+      - name: Run MegaLinter full scan
+        if: steps.state.outputs.skip != 'true'
+        id: megalinter
+        uses: oxsecurity/megalinter@v9
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          DEFAULT_WORKSPACE: ${{ github.workspace }}/source
+          VALIDATE_ALL_CODEBASE: true
+          DISABLE_ERRORS: true
+          APPLY_FIXES: none
+          PRINT_ALPACA: false
+          SARIF_REPORTER: false
+          GITHUB_STATUS_REPORTER: false
+          GITHUB_COMMENT_REPORTER: false
+          GITHUB_STEP_SUMMARY_REPORTER: true
+          FILEIO_REPORTER: true
+          FILTER_REGEX_EXCLUDE: '(Binaries/|Intermediate/|Saved/|DerivedDataCache/|\.git/|\.vs/|\.idea/)'
+
+      - name: Upsert private review report
+        if: steps.state.outputs.skip != 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
+          TODAY: ${{ steps.state.outputs.today }}
+          MEGALINTER_RESULT: ${{ steps.megalinter.outcome }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$REPORT_DIR"
+          head_sha="$(git -C source rev-parse HEAD)"
+          body_file="$REPORT_DIR/private-report.md"
+          {
+            echo "# Daily Static Review"
+            echo
+            echo "- Date: $TODAY"
+            echo "- Result: $MEGALINTER_RESULT"
+            echo "- Source repo: $SOURCE_REPO"
+            echo "- Public run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            echo "- Head SHA: $head_sha"
+            echo "- Tool: MegaLinter v9"
+            echo "- Mode: full codebase"
+            echo
+            echo "## Notes"
+            echo
+            echo "MegaLinter ran with generated/build/cache folders excluded. No artifacts uploaded. External reporters disabled. See public workflow summary/log for raw tool output."
+          } > "$body_file"
+          issue="$(TITLE="$REPORT_TITLE" gh issue list -R "$SOURCE_REPO" --state all --search "$REPORT_TITLE in:title" --json number,title --jq '.[] | select(.title == env.TITLE) | .number' | head -n 1)"
+          if [[ -z "$issue" ]]; then
+            gh issue create -R "$SOURCE_REPO" --title "$REPORT_TITLE" --body-file "$body_file" >/dev/null
+          else
+            gh issue edit "$issue" -R "$SOURCE_REPO" --body-file "$body_file"
+            gh issue reopen "$issue" -R "$SOURCE_REPO" || true
+          fi
+          echo "$head_sha" > "$REPORT_DIR/head-sha.txt"
+
+      - name: Update public daily state
+        if: steps.state.outputs.skip != 'true' && steps.megalinter.outcome == 'success'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TODAY: ${{ steps.state.outputs.today }}
+        run: |
+          set -euo pipefail
+          head_sha="$(cat "$REPORT_DIR/head-sha.txt")"
+          body_file="$REPORT_DIR/state.md"
+          {
+            echo "# Daily Static Full Scan State"
+            echo
+            echo "Do not edit unless resetting daily static full scan progress."
+            echo
+            echo '```json'
+            echo "{\"last_success_date\":\"$TODAY\",\"last_result\":\"success\",\"run_id\":\"$GITHUB_RUN_ID\",\"updated_at\":\"$(date -u +%FT%TZ)\"}"
+            echo '```'
+          } > "$body_file"
+          issue="$(gh issue list -R "$GITHUB_REPOSITORY" --state all --search "$STATE_TITLE in:title" --json number,title --jq '.[] | select(.title == env.STATE_TITLE) | .number' | head -n 1)"
+          if [[ -z "$issue" ]]; then
+            gh issue create -R "$GITHUB_REPOSITORY" --title "$STATE_TITLE" --body-file "$body_file" >/dev/null
+          else
+            gh issue edit "$issue" -R "$GITHUB_REPOSITORY" --body-file "$body_file"
+            gh issue reopen "$issue" -R "$GITHUB_REPOSITORY" || true
+          fi
+
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: |
+          set +x
+          rm -rf source "$REPORT_DIR"
+          rm -f ~/.git-credentials
+          git config --global --unset-all credential.helper || true
