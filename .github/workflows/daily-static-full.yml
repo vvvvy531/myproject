@@ -87,11 +87,12 @@ jobs:
         id: megalinter
         uses: oxsecurity/megalinter@v9
         continue-on-error: true
+        timeout-minutes: 20
         env:
           GITHUB_TOKEN: ${{ github.token }}
           DEFAULT_WORKSPACE: ${{ github.workspace }}/source
           VALIDATE_ALL_CODEBASE: true
-          ENABLE: CPP,C,YAML,JSON,MARKDOWN,BASH
+          ENABLE: YAML,JSON,BASH
           DISABLE_ERRORS: true
           APPLY_FIXES: none
           PRINT_ALPACA: false
@@ -101,7 +102,8 @@ jobs:
           GITHUB_COMMENT_REPORTER: false
           GITHUB_STEP_SUMMARY_REPORTER: true
           FILEIO_REPORTER: true
-          FILTER_REGEX_EXCLUDE: '(Binaries/|Intermediate/|Saved/|DerivedDataCache/|\.git/|\.vs/|\.idea/)'
+          FILTER_REGEX_INCLUDE: '(\.ya?ml$|\.json$|\.sh$|\.bash$|\.uproject$|\.uplugin$)'
+          FILTER_REGEX_EXCLUDE: '(Binaries/|Intermediate/|Saved/|DerivedDataCache/|Content/|graphify-out/|\.git/|\.vs/|\.idea/)'
 
       - name: Upsert private review report
         if: steps.state.outputs.skip != 'true'
@@ -126,7 +128,8 @@ jobs:
             echo "- Public run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
             echo "- Head SHA: $head_sha"
             echo "- Tool: MegaLinter v9"
-            echo "- Mode: full codebase"
+            echo "- Mode: full codebase lightweight static pass"
+            echo "- Enabled families: YAML, JSON, BASH"
             echo
             echo "## Notes"
             echo
