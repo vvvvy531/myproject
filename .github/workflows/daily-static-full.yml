@@ -27,7 +27,7 @@ jobs:
   daily-static-full:
     name: Daily static full codebase review
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 150
     steps:
       - name: Check unresolved report and daily state
         id: state
@@ -89,12 +89,12 @@ jobs:
         if: steps.state.outputs.skip != 'true'
         id: megalinter
         shell: bash
-        timeout-minutes: 40
+        timeout-minutes: 125
         run: |
           set +x
           set +e
           mkdir -p "$REPORT_DIR/megalinter-reports"
-          docker run --rm \
+          timeout 110m docker run --rm \
             -v "$PWD/source:/tmp/lint" \
             -v "$PWD/$REPORT_DIR/megalinter-reports:/tmp/lint/megalinter-reports" \
             -e DEFAULT_WORKSPACE=/tmp/lint \
@@ -227,7 +227,7 @@ jobs:
         shell: bash
         run: |
           set +x
-          rm -rf source "$REPORT_DIR"
+          sudo rm -rf source "$REPORT_DIR" || rm -rf source "$REPORT_DIR" || true
           rm -f ~/.git-credentials
           git config --global --unset-all credential.helper || true
 
