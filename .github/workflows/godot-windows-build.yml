@@ -4,28 +4,28 @@ on:
   workflow_dispatch:
     inputs:
       source_ref:
-        description: Private source branch/tag/SHA to build
+        description: Godot private repo branch/tag/SHA to build
         required: true
-        default: godot
+        default: main
       output_ref:
         description: Build artifact branch in myproject-linux-builds
         required: true
         default: godot-windows
 
 jobs:
-  dispatch-private-build:
+  dispatch-godot-build:
     runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
-      - name: Dispatch private source build
+      - name: Dispatch Godot private build
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
           SOURCE_REF: ${{ inputs.source_ref }}
           OUTPUT_REF: ${{ inputs.output_ref }}
         run: |
           gh workflow run godot-windows-build.yml \
-            --repo vvvvy531/myproject-source \
+            --repo vvvvy531/myproject-godot \
             --ref "$SOURCE_REF" \
             -f source_ref="$SOURCE_REF" \
             -f output_ref="$OUTPUT_REF"
