@@ -100,8 +100,11 @@ jobs:
           SARIF_REPORTER: false
           GITHUB_STATUS_REPORTER: false
           GITHUB_COMMENT_REPORTER: false
-          GITHUB_STEP_SUMMARY_REPORTER: true
+          GITHUB_STEP_SUMMARY_REPORTER: false
+          CONSOLE_REPORTER: false
           FILEIO_REPORTER: true
+          SECURITY_SUGGESTIONS: false
+          FLAVOR_SUGGESTIONS: false
           FILTER_REGEX_INCLUDE: '(\.ya?ml$|\.json$|\.sh$|\.bash$|\.uproject$|\.uplugin$)'
           FILTER_REGEX_EXCLUDE: '(Binaries/|Intermediate/|Saved/|DerivedDataCache/|Content/|graphify-out/|\.git/|\.vs/|\.idea/)'
 
@@ -133,7 +136,7 @@ jobs:
             echo
             echo "## Notes"
             echo
-            echo "MegaLinter ran with generated/build/cache folders excluded. No artifacts uploaded. External reporters disabled."
+            echo "MegaLinter ran with generated/build/cache folders excluded. No artifacts uploaded. External, console, and public step-summary reporters disabled."
             echo
             echo "This issue is the unresolved-work gate: leave it open to skip future scans; close it after resolving/reviewing findings so the next scheduled run overwrites and reopens it."
             echo
