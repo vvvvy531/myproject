@@ -91,9 +91,11 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           DEFAULT_WORKSPACE: ${{ github.workspace }}/source
           VALIDATE_ALL_CODEBASE: true
+          ENABLE: CPP,C,YAML,JSON,MARKDOWN,BASH
           DISABLE_ERRORS: true
           APPLY_FIXES: none
           PRINT_ALPACA: false
+          PARALLEL_PROCESS_NUMBER: 2
           SARIF_REPORTER: false
           GITHUB_STATUS_REPORTER: false
           GITHUB_COMMENT_REPORTER: false
@@ -107,7 +109,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
           TODAY: ${{ steps.state.outputs.today }}
-          MEGALINTER_RESULT: ${{ steps.megalinter.outcome }}
+          MEGALINTER_OUTCOME: ${{ steps.megalinter.outcome }}
+          MEGALINTER_CONCLUSION: ${{ steps.megalinter.conclusion }}
         run: |
           set -euo pipefail
           mkdir -p "$REPORT_DIR"
@@ -117,7 +120,8 @@ jobs:
             echo "# Daily Static Review"
             echo
             echo "- Date: $TODAY"
-            echo "- Result: $MEGALINTER_RESULT"
+            echo "- Result: $MEGALINTER_CONCLUSION"
+            echo "- MegaLinter outcome: $MEGALINTER_OUTCOME"
             echo "- Source repo: $SOURCE_REPO"
             echo "- Public run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
             echo "- Head SHA: $head_sha"
@@ -140,7 +144,7 @@ jobs:
           echo "$head_sha" > "$REPORT_DIR/head-sha.txt"
 
       - name: Update public daily state
-        if: steps.state.outputs.skip != 'true' && steps.megalinter.outcome == 'success'
+        if: steps.state.outputs.skip != 'true' && steps.megalinter.conclusion == 'success'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
