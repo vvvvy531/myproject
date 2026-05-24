@@ -704,7 +704,7 @@ jobs:
 
             -Dsonar.sources=.
 
-            -Dsonar.cfamily.compile-commands=.sonar/bw-output/compile_commands.json
+            -Dsonar.cfamily.compile-commands=source/.sonar/bw-output/compile_commands.json
 
             -Dsonar.exclusions=**/Binaries/**,**/DerivedDataCache/**,**/Intermediate/**,**/Saved/**,**/.git/**,**/.github/**,**/graphify-out/**,**/.sonar/build-wrapper-linux-x86/**
 
