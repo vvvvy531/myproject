@@ -23,18 +23,20 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - name: Check daily state
+      - name: Check daily state and unresolved report
         id: state
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          PRIVATE_GH_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
         run: |
           set -euo pipefail
           today="$(TZ=Asia/Shanghai date +%F)"
           echo "today=$today" >> "$GITHUB_OUTPUT"
-          issue="$(gh issue list -R "$GITHUB_REPOSITORY" --state all --search "$STATE_TITLE in:title" --json number,title --jq '.[] | select(.title == env.STATE_TITLE) | .number' | head -n 1)"
-          if [[ -n "$issue" ]]; then
-            gh issue view "$issue" -R "$GITHUB_REPOSITORY" --json body --jq .body > /tmp/daily-static-state.md || true
+
+          state_issue="$(gh issue list -R "$GITHUB_REPOSITORY" --state all --search "$STATE_TITLE in:title" --json number,title --jq '.[] | select(.title == env.STATE_TITLE) | .number' | head -n 1)"
+          if [[ -n "$state_issue" ]]; then
+            gh issue view "$state_issue" -R "$GITHUB_REPOSITORY" --json body --jq .body > /tmp/daily-static-state.md || true
           fi
           last="$(python3 - <<'PY'
           import json,re,pathlib
@@ -44,11 +46,27 @@ jobs:
           print(json.loads(m.group(1)).get('last_success_date','') if m else '')
           PY
           )"
-          if [[ "$last" == "$today" ]]; then
+
+          report_json="$(GH_TOKEN="$PRIVATE_GH_TOKEN" TITLE="$REPORT_TITLE" gh issue list -R "$SOURCE_REPO" --state all --search "$REPORT_TITLE in:title" --json number,title,state --jq '.[] | select(.title == env.TITLE) | {number,state}' | head -n 1)"
+          report_state="$(printf '%s' "${report_json:-{}}" | jq -r '.state // "none"')"
+          report_number="$(printf '%s' "${report_json:-{}}" | jq -r '.number // ""')"
+          echo "report_state=$report_state" >> "$GITHUB_OUTPUT"
+          echo "report_number=$report_number" >> "$GITHUB_OUTPUT"
+
+          if [[ "$report_state" == "OPEN" ]]; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "skip_reason=open_report_issue" >> "$GITHUB_OUTPUT"
+            echo "Skip: private report issue #$report_number is still open"
+          elif [[ "$last" == "$today" && "$report_state" != "CLOSED" ]]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "skip_reason=already_completed_today" >> "$GITHUB_OUTPUT"
             echo "Already completed today: $today"
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "skip_reason=" >> "$GITHUB_OUTPUT"
+            if [[ "$report_state" == "CLOSED" ]]; then
+              echo "Previous private report issue was closed; re-scan will overwrite and reopen it"
+            fi
           fi
 
       - name: Checkout private source main
@@ -109,6 +127,8 @@ jobs:
             echo "## Notes"
             echo
             echo "MegaLinter ran with generated/build/cache folders excluded. No artifacts uploaded. External reporters disabled. See public workflow summary/log for raw tool output."
+            echo
+            echo "This issue is the unresolved-work gate: leave it open to skip future scans; close it after resolving/reviewing findings so the next scheduled run overwrites and reopens it."
           } > "$body_file"
           issue="$(TITLE="$REPORT_TITLE" gh issue list -R "$SOURCE_REPO" --state all --search "$REPORT_TITLE in:title" --json number,title --jq '.[] | select(.title == env.TITLE) | .number' | head -n 1)"
           if [[ -z "$issue" ]]; then
@@ -154,3 +174,4 @@ jobs:
           rm -rf source "$REPORT_DIR"
           rm -f ~/.git-credentials
           git config --global --unset-all credential.helper || true
+
