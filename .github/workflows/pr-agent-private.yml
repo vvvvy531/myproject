@@ -108,7 +108,7 @@ jobs:
         env:
           GITHUB__USER_TOKEN: ${{ github.event_name == 'pull_request' && github.token || secrets.PRIVATE_SOURCE_PAT }}
           OPENAI__KEY: ${{ secrets.CLIPROXY_API_KEY }}
-          OPENAI__API_BASE: https://cliproxy.boxd.sh/v1
+          OPENAI__API_BASE: https://github-runner-pr.boxd.sh/v1
           config.model: openai/review
           config.weak_model: openai/review
           config.fallback_models: '["openai/review"]'
