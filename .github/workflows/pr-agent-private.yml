@@ -108,11 +108,14 @@ jobs:
         env:
           GITHUB__USER_TOKEN: ${{ github.event_name == 'pull_request' && github.token || secrets.PRIVATE_SOURCE_PAT }}
           OPENAI__KEY: ${{ secrets.OPENAI_KEY }}
+          OPENAI__API_KEY: ${{ secrets.OPENAI_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_KEY }}
           OPENAI__API_BASE: https://github-runner-pr.boxd.sh/v1
-          config.model: openai/review
-          config.weak_model: openai/review
-          config.fallback_models: '["openai/review"]'
+          OPENAI_API_BASE: https://github-runner-pr.boxd.sh/v1
+          OPENAI_BASE_URL: https://github-runner-pr.boxd.sh/v1
+          config.model: review
+          config.weak_model: review
+          config.fallback_models: '["review"]'
           config.custom_model_max_tokens: '128000'
           config.ai_timeout: '300'
           config.verbosity_level: '1'
