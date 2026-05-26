@@ -126,12 +126,20 @@ jobs:
           config.weak_model: ${{ vars.OPENAI_MODEL || 'gpt-5.5' }}
           config.fallback_models: "[\"${{ vars.OPENAI_MODEL || 'gpt-5.5' }}\"]"
           config.custom_model_max_tokens: '128000'
-          config.ai_timeout: '300'
+          config.ai_timeout: '900'
           config.verbosity_level: '1'
           pr_reviewer.extra_instructions: Focus on Linux build safety, Unreal Engine build issues, CI/CD, release artifacts, shell commands, secrets leakage, permissions, and supply-chain risks. Do not repeat large code blocks.
         run: |
           set +x
-          pr-agent --pr_url "$PR_URL" review
+          set +e
+          pr-agent --pr_url "$PR_URL" review 2>&1 | tee pr-agent-review.log
+          pr_agent_status=${PIPESTATUS[0]}
+          set -e
+          if grep -E "(Failed to review PR|Failed to generate prediction|Error during LLM inference|litellm\.Timeout|Traceback)" pr-agent-review.log >/dev/null; then
+            echo "PR-Agent reported an internal LLM/review failure" >&2
+            exit 1
+          fi
+          exit "$pr_agent_status"
 
 
       - name: Mark private PR-Agent status success
