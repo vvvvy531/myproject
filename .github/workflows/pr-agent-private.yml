@@ -132,9 +132,16 @@ jobs:
         run: |
           set +x
           set +e
+          set -o pipefail
           pr-agent --pr_url "$PR_URL" review 2>&1 | tee pr-agent-review.log
           pr_agent_status=${PIPESTATUS[0]}
+          tee_status=${PIPESTATUS[1]:-0}
+          set +o pipefail
           set -e
+          if [[ "$tee_status" -ne 0 ]]; then
+            echo "tee failed while capturing PR-Agent output" >&2
+            exit "$tee_status"
+          fi
           if grep -E "(Failed to review PR|Failed to generate prediction|Error during LLM inference|litellm\.Timeout|Traceback)" pr-agent-review.log >/dev/null; then
             echo "PR-Agent reported an internal LLM/review failure" >&2
             exit 1
