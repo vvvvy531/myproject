@@ -127,6 +127,7 @@ jobs:
           base = os.environ['OPENAI_BASE_URL'].rstrip('/')
           key = os.environ['OPENAI_KEY']
           model = os.environ['OPENAI_MODEL']
+          probe_model = model.removeprefix('openai/')
           def post(path, payload, timeout=60):
               req = urllib.request.Request(
                   base + path,
@@ -147,15 +148,15 @@ jobs:
               print(f"/models probe failed: {type(e).__name__}: {e}")
           try:
               status, body = post('/chat/completions', {
-                  'model': model,
+                  'model': probe_model,
                   'messages': [{'role': 'user', 'content': 'Reply with OK only.'}],
                   'max_tokens': 8,
                   'temperature': 0,
               })
-              print(f"/chat/completions ok: HTTP {status} for model {model}")
+              print(f"/chat/completions ok: HTTP {status} for model {probe_model}")
           except urllib.error.HTTPError as e:
               detail = e.read(512).decode('utf-8', 'replace')
-              print(f"/chat/completions failed: HTTP {e.code} for model {model}: {detail}")
+              print(f"/chat/completions failed: HTTP {e.code} for model {probe_model}: {detail}")
               raise
           except Exception as e:
               print(f"/chat/completions failed: {type(e).__name__}: {e}")
