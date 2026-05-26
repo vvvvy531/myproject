@@ -113,6 +113,55 @@ jobs:
             exit 1
           fi
 
+      - name: Probe OpenAI-compatible endpoint
+        shell: bash
+        env:
+          OPENAI_KEY: ${{ secrets.OPENAI_KEY }}
+          OPENAI_BASE_URL: ${{ vars.OPENAI_BASE_URL }}
+          OPENAI_MODEL: ${{ vars.OPENAI_MODEL || 'gpt-5.5' }}
+        run: |
+          set +x
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, urllib.request, urllib.error
+          base = os.environ['OPENAI_BASE_URL'].rstrip('/')
+          key = os.environ['OPENAI_KEY']
+          model = os.environ['OPENAI_MODEL']
+          def post(path, payload, timeout=60):
+              req = urllib.request.Request(
+                  base + path,
+                  data=json.dumps(payload).encode(),
+                  headers={'Authorization': f'Bearer {key}', 'Content-Type': 'application/json'},
+                  method='POST',
+              )
+              with urllib.request.urlopen(req, timeout=timeout) as r:
+                  return r.status, r.read(2048).decode('utf-8', 'replace')
+          req = urllib.request.Request(base + '/models', headers={'Authorization': f'Bearer {key}'})
+          try:
+              with urllib.request.urlopen(req, timeout=30) as r:
+                  body = json.loads(r.read().decode('utf-8', 'replace'))
+                  ids = [m.get('id') for m in body.get('data', []) if isinstance(m, dict)]
+                  print(f"/models ok: {len(ids)} models")
+                  print('model sample:', ', '.join(ids[:20]))
+          except Exception as e:
+              print(f"/models probe failed: {type(e).__name__}: {e}")
+          try:
+              status, body = post('/chat/completions', {
+                  'model': model,
+                  'messages': [{'role': 'user', 'content': 'Reply with OK only.'}],
+                  'max_tokens': 8,
+                  'temperature': 0,
+              })
+              print(f"/chat/completions ok: HTTP {status} for model {model}")
+          except urllib.error.HTTPError as e:
+              detail = e.read(512).decode('utf-8', 'replace')
+              print(f"/chat/completions failed: HTTP {e.code} for model {model}: {detail}")
+              raise
+          except Exception as e:
+              print(f"/chat/completions failed: {type(e).__name__}: {e}")
+              raise
+          PY
+
       - name: Run PR-Agent review
         working-directory: source
         shell: bash
