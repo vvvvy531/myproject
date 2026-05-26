@@ -114,8 +114,8 @@ jobs:
 
           if [[ -z "${HEAD_SHA:-}" || -z "${PR_TITLE:-}" ]]; then
             pr_json="$(gh pr view "$PR_NUMBER" --repo "$SOURCE_REPO" --json headRefOid,title)"
-            HEAD_SHA="${HEAD_SHA:-$(jq -r '.headRefOid' <<<"$pr_json") }"
-            PR_TITLE="${PR_TITLE:-$(jq -r '.title' <<<"$pr_json") }"
+            HEAD_SHA="${HEAD_SHA:-$(jq -r '.headRefOid' <<<"$pr_json")}"
+            PR_TITLE="${PR_TITLE:-$(jq -r '.title' <<<"$pr_json")}"
           fi
 
           gh pr diff "$PR_NUMBER" --repo "$SOURCE_REPO" --patch > "$tmpdir/pr.diff"
@@ -148,7 +148,8 @@ jobs:
             -w /review \
             -e ANTHROPIC_API_KEY \
             -e ANTHROPIC_BASE_URL \
-            -e HOME=/review/home \
+            -e HOME=/home/boxd \
+            -v "$tmpdir/home:/home/boxd" \
             "$CLAUDE_CLI_IMAGE" \
             --add-dir /review \
             -p "Read /review/full-review-prompt.md and produce the requested PR review." \
@@ -205,3 +206,4 @@ jobs:
           rm -rf ~/.claude/projects ~/.claude/sessions ~/.claude/statsig ~/.claude/todos || true
           rm -f ~/.bash_history ~/.zsh_history ~/.git-credentials || true
           git config --global --unset-all credential.helper || true
+
