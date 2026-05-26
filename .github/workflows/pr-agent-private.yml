@@ -116,7 +116,7 @@ jobs:
       - name: Probe OpenAI-compatible endpoint
         shell: bash
         env:
-          OPENAI_KEY: ${{ secrets.CLIPROXY_API_KEY }}
+          OPENAI_KEY: no-key
           OPENAI_BASE_URL: ${{ vars.OPENAI_BASE_URL }}
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL || 'gpt-5.5' }}
         run: |
@@ -131,12 +131,12 @@ jobs:
               req = urllib.request.Request(
                   base + path,
                   data=json.dumps(payload).encode(),
-                  headers={'Authorization': f'Bearer {key}', 'Content-Type': 'application/json'},
+                  headers={'Content-Type': 'application/json'},
                   method='POST',
               )
               with urllib.request.urlopen(req, timeout=timeout) as r:
                   return r.status, r.read(2048).decode('utf-8', 'replace')
-          req = urllib.request.Request(base + '/models', headers={'Authorization': f'Bearer {key}'})
+          req = urllib.request.Request(base + '/models')
           try:
               with urllib.request.urlopen(req, timeout=30) as r:
                   body = json.loads(r.read().decode('utf-8', 'replace'))
@@ -167,8 +167,8 @@ jobs:
         shell: bash
         env:
           GITHUB__USER_TOKEN: ${{ github.event_name == 'pull_request' && github.token || secrets.PRIVATE_SOURCE_PAT }}
-          OPENAI_KEY: ${{ secrets.CLIPROXY_API_KEY }}
-          OPENAI__KEY: ${{ secrets.CLIPROXY_API_KEY }}
+          OPENAI_KEY: no-key
+          OPENAI__KEY: no-key
           OPENAI.API_BASE: ${{ vars.OPENAI_BASE_URL }}
           OPENAI__API_BASE: ${{ vars.OPENAI_BASE_URL }}
           config.model: ${{ vars.OPENAI_MODEL || 'gpt-5.5' }}
