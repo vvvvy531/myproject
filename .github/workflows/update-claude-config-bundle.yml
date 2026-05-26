@@ -65,25 +65,11 @@ jobs:
         run: |
           set -euo pipefail
           existing_sha="$(gh api "repos/${BUILDS_REPO}/contents/${BUNDLE_PATH}?ref=main" --jq '.sha')"
-          python3 - "$tmpdir/${BUNDLE_PATH}" "$existing_sha" > "$tmpdir/update-bundle.json" <<'PY'
-import base64
-import json
-import sys
-
-bundle_path, existing_sha = sys.argv[1:3]
-with open(bundle_path, 'rb') as bundle_file:
-    content = base64.b64encode(bundle_file.read()).decode('ascii')
-json.dump({
-    'message': 'Update Claude config bundle after plugin refresh',
-    'content': content,
-    'sha': existing_sha,
-    'branch': 'main',
-}, sys.stdout)
-PY
-          commit_sha="$(gh api --method PUT "repos/${BUILDS_REPO}/contents/${BUNDLE_PATH}"             --input "$tmpdir/update-bundle.json" --jq '.commit.sha')"
+          python3 -c "import base64,json,sys; p,s=sys.argv[1:3]; print(json.dumps({'message':'Update Claude config bundle after plugin refresh','content':base64.b64encode(open(p,'rb').read()).decode('ascii'),'sha':s,'branch':'main'}))" "$tmpdir/${BUNDLE_PATH}" "$existing_sha" > "$tmpdir/update-bundle.json"          commit_sha="$(gh api --method PUT "repos/${BUILDS_REPO}/contents/${BUNDLE_PATH}"             --input "$tmpdir/update-bundle.json" --jq '.commit.sha')"
           bundle_sha256="$(cut -d' ' -f1 "$tmpdir/${BUNDLE_PATH}.sha256")"
           echo "Updated ${BUILDS_REPO}@${commit_sha}"
           echo "Bundle sha256: ${bundle_sha256}"
+
 
 
 
