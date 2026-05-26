@@ -39,7 +39,18 @@ jobs:
           set -euo pipefail
           printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USERNAME" --password-stdin
           docker pull "$CLAUDE_CLI_IMAGE"
-          docker run --rm             -v "$tmpdir/home:/home/claude"             -e HOME=/home/claude             "$CLAUDE_CLI_IMAGE"             plugin update --all
+          docker run --rm \
+            -v "$tmpdir/home:/home/claude" \
+            -e HOME=/home/claude \
+            "$CLAUDE_CLI_IMAGE" \
+            plugin list --json > "$tmpdir/plugins.json"
+          jq -r '.[] | select(.scope == "user" or .scope == "project") | [.id, .scope] | @tsv' "$tmpdir/plugins.json" | while IFS=$'\t' read -r plugin_id plugin_scope; do
+            docker run --rm \
+              -v "$tmpdir/home:/home/claude" \
+              -e HOME=/home/claude \
+              "$CLAUDE_CLI_IMAGE" \
+              plugin update "$plugin_id" --scope "$plugin_scope"
+          done
 
       - name: Rebuild sanitized bundle
         run: |
@@ -60,4 +71,5 @@ jobs:
           bundle_sha256="$(cut -d' ' -f1 "$tmpdir/${BUNDLE_PATH}.sha256")"
           echo "Updated ${BUILDS_REPO}@${commit_sha}"
           echo "Bundle sha256: ${bundle_sha256}"
+
 
