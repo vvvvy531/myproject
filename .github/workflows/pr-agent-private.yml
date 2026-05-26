@@ -116,7 +116,7 @@ jobs:
       - name: Probe OpenAI-compatible endpoint
         shell: bash
         env:
-          OPENAI_KEY: ${{ secrets.OPENAI_KEY }}
+          OPENAI_KEY: ${{ secrets.CLIPROXY_API_KEY }}
           OPENAI_BASE_URL: ${{ vars.OPENAI_BASE_URL }}
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL || 'gpt-5.5' }}
         run: |
@@ -167,8 +167,8 @@ jobs:
         shell: bash
         env:
           GITHUB__USER_TOKEN: ${{ github.event_name == 'pull_request' && github.token || secrets.PRIVATE_SOURCE_PAT }}
-          OPENAI_KEY: ${{ secrets.OPENAI_KEY }}
-          OPENAI__KEY: ${{ secrets.OPENAI_KEY }}
+          OPENAI_KEY: ${{ secrets.CLIPROXY_API_KEY }}
+          OPENAI__KEY: ${{ secrets.CLIPROXY_API_KEY }}
           OPENAI.API_BASE: ${{ vars.OPENAI_BASE_URL }}
           OPENAI__API_BASE: ${{ vars.OPENAI_BASE_URL }}
           config.model: ${{ vars.OPENAI_MODEL || 'gpt-5.5' }}
