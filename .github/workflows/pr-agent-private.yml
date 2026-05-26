@@ -77,7 +77,7 @@ jobs:
 
       - name: Checkout public PR
         if: github.event_name == 'pull_request'
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           fetch-depth: 0
           path: source
@@ -85,7 +85,7 @@ jobs:
 
       - name: Checkout private source
         if: github.event_name != 'pull_request'
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           repository: ${{ env.SOURCE_REPO }}
           token: ${{ secrets.PRIVATE_SOURCE_PAT }}
@@ -102,6 +102,17 @@ jobs:
           python3 -m pip install --upgrade pip
           python3 -m pip install pr-agent
 
+      - name: Validate PR-Agent OpenAI config
+        shell: bash
+        env:
+          OPENAI_BASE_URL: ${{ vars.OPENAI_BASE_URL }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${OPENAI_BASE_URL:-}" ]]; then
+            echo "OPENAI_BASE_URL repository variable is required" >&2
+            exit 1
+          fi
+
       - name: Run PR-Agent review
         working-directory: source
         shell: bash
@@ -109,11 +120,11 @@ jobs:
           GITHUB__USER_TOKEN: ${{ github.event_name == 'pull_request' && github.token || secrets.PRIVATE_SOURCE_PAT }}
           OPENAI_KEY: ${{ secrets.OPENAI_KEY }}
           OPENAI__KEY: ${{ secrets.OPENAI_KEY }}
-          OPENAI.API_BASE: ${{ vars.OPENAI_BASE_URL || 'http://93.115.101.182:10670/v1' }}
-          OPENAI__API_BASE: ${{ vars.OPENAI_BASE_URL || 'http://93.115.101.182:10670/v1' }}
+          OPENAI.API_BASE: ${{ vars.OPENAI_BASE_URL }}
+          OPENAI__API_BASE: ${{ vars.OPENAI_BASE_URL }}
           config.model: ${{ vars.OPENAI_MODEL || 'gpt-5.5' }}
           config.weak_model: ${{ vars.OPENAI_MODEL || 'gpt-5.5' }}
-          config.fallback_models: '["gpt-5.5"]'
+          config.fallback_models: "[\"${{ vars.OPENAI_MODEL || 'gpt-5.5' }}\"]"
           config.custom_model_max_tokens: '128000'
           config.ai_timeout: '300'
           config.verbosity_level: '1'
@@ -172,6 +183,3 @@ jobs:
           rm -rf ~/.claude/projects ~/.claude/sessions ~/.claude/statsig ~/.claude/todos || true
           rm -f ~/.bash_history ~/.zsh_history ~/.git-credentials || true
           git config --global --unset-all credential.helper || true
-
-
-
