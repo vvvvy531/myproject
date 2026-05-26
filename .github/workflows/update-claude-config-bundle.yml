@@ -60,3 +60,4 @@ jobs:
           bundle_sha256="$(cut -d' ' -f1 "$tmpdir/${BUNDLE_PATH}.sha256")"
           echo "Updated ${BUILDS_REPO}@${commit_sha}"
           echo "Bundle sha256: ${bundle_sha256}"
+
