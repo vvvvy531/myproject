@@ -145,7 +145,7 @@ jobs:
                   print(f"/models ok: {len(ids)} models")
                   print('model sample:', ', '.join(ids[:20]))
           except Exception as e:
-              print(f"/models probe failed: {type(e).__name__}: {e}")
+              print(f"/models probe failed: {type(e).__name__}")
           try:
               status, body = post('/chat/completions', {
                   'model': probe_model,
@@ -158,7 +158,7 @@ jobs:
               print(f"/chat/completions failed: HTTP {e.code} for model {probe_model}")
               raise
           except Exception as e:
-              print(f"/chat/completions failed: {type(e).__name__}: {e}")
+              print(f"/chat/completions failed: {type(e).__name__} for model {probe_model}")
               raise
           PY
 
