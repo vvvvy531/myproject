@@ -1,0 +1,207 @@
+name: Private Claude PR Review
+
+on:
+  repository_dispatch:
+    types: [private-claude-pr-review]
+  workflow_dispatch:
+    inputs:
+      source_repo:
+        description: Private source repo, e.g. vvvvy531/myproject-source
+        required: true
+        default: vvvvy531/myproject-source
+      pr_number:
+        description: Private source PR number
+        required: true
+      head_sha:
+        description: Optional source head SHA for status
+        required: false
+      base_ref:
+        description: Optional base ref
+        required: false
+        default: main
+      title:
+        description: Optional PR title
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: private-claude-pr-review-${{ github.event.client_payload.source_repo || inputs.source_repo }}-${{ github.event.client_payload.pr_number || inputs.pr_number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      SOURCE_REPO: ${{ github.event.client_payload.source_repo || inputs.source_repo }}
+      PR_NUMBER: ${{ github.event.client_payload.pr_number || inputs.pr_number }}
+      HEAD_SHA: ${{ github.event.client_payload.head_sha || inputs.head_sha }}
+      BASE_REF: ${{ github.event.client_payload.base_ref || inputs.base_ref || 'main' }}
+      PR_TITLE: ${{ github.event.client_payload.title || inputs.title }}
+      CLAUDE_CLI_IMAGE: ghcr.io/vvvvy531/claude-code-cli@sha256:3c1ac4c0e503064d4e35b65ddbe7ccba44f33a6dc432ca902776c9c5fa7092be
+      CLAUDE_CONFIG_BUNDLE_REPO: vvvvy531/myproject-linux-builds
+      CLAUDE_CONFIG_BUNDLE_REF: main
+      BUNDLE_PATH: claude-config-bundle.tar.gz
+      REVIEW_FOCUS: |
+        Review this Unreal Engine private source pull request.
+        Focus only on high-confidence correctness bugs, Linux build safety, Unreal build issues, CI/CD, release artifacts, shell commands, secrets leakage, permissions, and supply-chain risks.
+        Do not suggest broad refactors or style-only changes.
+    steps:
+      - name: Validate PR payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$SOURCE_REPO" in
+            ""|*" "*|*".."*|*"//"*)
+              echo "Invalid source_repo payload" >&2
+              exit 1
+              ;;
+          esac
+          case "$PR_NUMBER" in
+            ''|*[!0-9]*)
+              echo "Invalid pr_number payload" >&2
+              exit 1
+              ;;
+          esac
+          echo "Review target: ${SOURCE_REPO}#${PR_NUMBER}"
+
+      - name: Mark Claude review pending
+        if: env.HEAD_SHA != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set +x
+          gh api --method POST "repos/${SOURCE_REPO}/statuses/${HEAD_SHA}" \
+            -f state=pending \
+            -f context='Public Claude PR Review' \
+            -f description='Claude review running in public CI' \
+            -f target_url="$RUN_URL"
+
+      - name: Review PR with Claude
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
+          ANTHROPIC_API_KEY: ${{ secrets.CLIPROXY_API_KEY }}
+          ANTHROPIC_BASE_URL: ${{ vars.OPENAI_BASE_URL }}
+          GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+          CLAUDE_CONFIG_BUNDLE_TOKEN: ${{ secrets.LINUX_BUILDS_PAT }}
+        run: |
+          set +x
+          set -euo pipefail
+          tmpdir="$(mktemp -d "${RUNNER_TEMP:-/tmp}/claude-pr-review.XXXXXX")"
+          chmod 700 "$tmpdir"
+          mkdir -p "$tmpdir/home" "$tmpdir/bundle"
+          chmod 700 "$tmpdir/home"
+          trap 'rm -rf "$tmpdir"' EXIT
+
+          if [[ -z "${ANTHROPIC_API_KEY:-}" ]]; then
+            echo "CLIPROXY_API_KEY secret is required" >&2
+            exit 1
+          fi
+          if [[ -z "${ANTHROPIC_BASE_URL:-}" ]]; then
+            echo "OPENAI_BASE_URL repository variable is required" >&2
+            exit 1
+          fi
+          if [[ -z "${CLAUDE_CONFIG_BUNDLE_TOKEN:-}" ]]; then
+            echo "LINUX_BUILDS_PAT secret is required" >&2
+            exit 1
+          fi
+
+          if [[ -z "${HEAD_SHA:-}" || -z "${PR_TITLE:-}" ]]; then
+            pr_json="$(gh pr view "$PR_NUMBER" --repo "$SOURCE_REPO" --json headRefOid,title)"
+            HEAD_SHA="${HEAD_SHA:-$(jq -r '.headRefOid' <<<"$pr_json") }"
+            PR_TITLE="${PR_TITLE:-$(jq -r '.title' <<<"$pr_json") }"
+          fi
+
+          gh pr diff "$PR_NUMBER" --repo "$SOURCE_REPO" --patch > "$tmpdir/pr.diff"
+          {
+            printf '%s\n\n' "$REVIEW_FOCUS"
+            printf '%s\n' 'Output concise Markdown with:'
+            printf '%s\n' '- Summary'
+            printf '%s\n' '- Findings, each with file/path and why it matters'
+            printf '%s\n\n' '- If no high-confidence findings, say: No high-confidence issues found.'
+            printf '%s\n' '## PR metadata'
+            printf 'Repository: %s\n' "$SOURCE_REPO"
+            printf 'Title: %s\n' "$PR_TITLE"
+            printf 'Number: #%s\n\n' "$PR_NUMBER"
+            printf '%s\n' '## Diff'
+            printf '%s\n' '```diff'
+            sed -n '1,12000p' "$tmpdir/pr.diff"
+            printf '%s\n' '```'
+          } > "$tmpdir/full-review-prompt.md"
+
+          GH_TOKEN="$CLAUDE_CONFIG_BUNDLE_TOKEN" gh api -H 'Accept: application/vnd.github.raw' "repos/${CLAUDE_CONFIG_BUNDLE_REPO}/contents/${BUNDLE_PATH}?ref=${CLAUDE_CONFIG_BUNDLE_REF}" > "$tmpdir/bundle/${BUNDLE_PATH}"
+          tar -xzf "$tmpdir/bundle/${BUNDLE_PATH}" -C "$tmpdir/home"
+          chmod -R go-rwx "$tmpdir/home"
+
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USERNAME" --password-stdin
+          docker pull "$CLAUDE_CLI_IMAGE"
+
+          set +e
+          docker run --rm \
+            -v "$tmpdir:/review" \
+            -w /review \
+            -e ANTHROPIC_API_KEY \
+            -e ANTHROPIC_BASE_URL \
+            -e HOME=/review/home \
+            "$CLAUDE_CLI_IMAGE" \
+            --add-dir /review \
+            -p "Read /review/full-review-prompt.md and produce the requested PR review." \
+            > "$tmpdir/claude-review.md" \
+            2> "$tmpdir/claude-review.err"
+          claude_status=$?
+          set -e
+
+          if [[ -s "$tmpdir/claude-review.err" ]]; then
+            sed 's/^/claude-review stderr: /' "$tmpdir/claude-review.err" >&2
+          fi
+          if [[ ! -s "$tmpdir/claude-review.md" ]]; then
+            echo "Claude review produced no output" >&2
+            exit "$([[ "$claude_status" -eq 0 ]] && echo 1 || echo "$claude_status")"
+          fi
+          if [[ "$claude_status" -ne 0 ]]; then
+            {
+              printf '%s\n\n' '> Note: `claude` exited non-zero after producing this review; posting output instead of failing workflow.'
+              cat "$tmpdir/claude-review.md"
+            } > "$tmpdir/claude-review-with-note.md"
+            mv "$tmpdir/claude-review-with-note.md" "$tmpdir/claude-review.md"
+          fi
+
+          gh pr comment "$PR_NUMBER" --repo "$SOURCE_REPO" --body-file "$tmpdir/claude-review.md"
+
+      - name: Mark Claude review result
+        if: always() && env.HEAD_SHA != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          set +x
+          if [[ "$JOB_STATUS" == "success" ]]; then
+            state=success
+            description='Claude review completed in public CI'
+          else
+            state=failure
+            description='Claude review failed in public CI'
+          fi
+          gh api --method POST "repos/${SOURCE_REPO}/statuses/${HEAD_SHA}" \
+            -f state="$state" \
+            -f context='Public Claude PR Review' \
+            -f description="$description" \
+            -f target_url="$RUN_URL"
+
+      - name: Cleanup local runner state
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          set +x
+          rm -rf ~/.claude/projects ~/.claude/sessions ~/.claude/statsig ~/.claude/todos || true
+          rm -f ~/.bash_history ~/.zsh_history ~/.git-credentials || true
+          git config --global --unset-all credential.helper || true
