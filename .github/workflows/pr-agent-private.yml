@@ -183,8 +183,9 @@ jobs:
           set +e
           set -o pipefail
           pr-agent --pr_url "$PR_URL" review 2>&1 | tee pr-agent-review.log
-          pr_agent_status=${PIPESTATUS[0]}
-          tee_status=${PIPESTATUS[1]:-0}
+          pipeline_status=(${PIPESTATUS[@]})
+          pr_agent_status=${pipeline_status[0]:-1}
+          tee_status=${pipeline_status[1]:-1}
           set +o pipefail
           set -e
           if [[ "$tee_status" -ne 0 ]]; then
