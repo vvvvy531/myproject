@@ -142,7 +142,13 @@ jobs:
           path = sys.argv[1]
           with open(path, 'r', encoding='utf-8') as f:
               data = json.load(f)
-          data.pop('env', None)
+          env = data.get('env', {})
+          for key in ('ANTHROPIC_BASE_URL', 'ANTHROPIC_AUTH_TOKEN'):
+              env.pop(key, None)
+          if env:
+              data['env'] = env
+          else:
+              data.pop('env', None)
           with open(path, 'w', encoding='utf-8') as f:
               json.dump(data, f, indent=2)
               f.write('\n')
@@ -150,10 +156,15 @@ jobs:
           chmod -R go-rwx "$tmpdir/home"
 
           export ANTHROPIC_AUTH_TOKEN="$ANTHROPIC_API_KEY"
+          export ANTHROPIC_MODEL=review
+          export ANTHROPIC_CUSTOM_MODEL_OPTION=review
+          export ANTHROPIC_DEFAULT_OPUS_MODEL=review
+          export ANTHROPIC_DEFAULT_SONNET_MODEL=review
+          export ANTHROPIC_DEFAULT_HAIKU_MODEL=review
           printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USERNAME" --password-stdin
           docker pull "$CLAUDE_CLI_IMAGE"
           curl -fsS -H "Authorization: Bearer ${ANTHROPIC_API_KEY}" "${ANTHROPIC_BASE_URL%/}/v1/models" >/dev/null
-          docker run --rm --network host --entrypoint bash -e ANTHROPIC_BASE_URL -e ANTHROPIC_API_KEY -e ANTHROPIC_AUTH_TOKEN "$CLAUDE_CLI_IMAGE" -lc 'curl -fsS -H "Authorization: Bearer ${ANTHROPIC_API_KEY}" "${ANTHROPIC_BASE_URL%/}/v1/models" >/dev/null'
+          docker run --rm --network host --entrypoint bash -e ANTHROPIC_BASE_URL -e ANTHROPIC_API_KEY -e ANTHROPIC_AUTH_TOKEN -e ANTHROPIC_MODEL -e ANTHROPIC_CUSTOM_MODEL_OPTION -e ANTHROPIC_DEFAULT_OPUS_MODEL -e ANTHROPIC_DEFAULT_SONNET_MODEL -e ANTHROPIC_DEFAULT_HAIKU_MODEL "$CLAUDE_CLI_IMAGE" -lc 'curl -fsS -H "Authorization: Bearer ${ANTHROPIC_API_KEY}" "${ANTHROPIC_BASE_URL%/}/v1/models" >/dev/null'
 
           set +e
           docker run --rm --network host \
@@ -162,10 +173,16 @@ jobs:
             -e ANTHROPIC_API_KEY \
             -e ANTHROPIC_AUTH_TOKEN \
             -e ANTHROPIC_BASE_URL \
+            -e ANTHROPIC_MODEL \
+            -e ANTHROPIC_CUSTOM_MODEL_OPTION \
+            -e ANTHROPIC_DEFAULT_OPUS_MODEL \
+            -e ANTHROPIC_DEFAULT_SONNET_MODEL \
+            -e ANTHROPIC_DEFAULT_HAIKU_MODEL \
             -e HOME=/home/boxd \
             -v "$tmpdir/home:/home/boxd" \
             "$CLAUDE_CLI_IMAGE" \
             --add-dir /review \
+            --model review \
             -p "Read /review/full-review-prompt.md and produce the requested PR review." \
             > "$tmpdir/claude-review.md" \
             2> "$tmpdir/claude-review.err"
