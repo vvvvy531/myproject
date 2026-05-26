@@ -27,7 +27,7 @@ jobs:
           tmpdir="$(mktemp -d "${RUNNER_TEMP:-/tmp}/claude-bundle.XXXXXX")"
           echo "tmpdir=$tmpdir" >> "$GITHUB_ENV"
           mkdir -p "$tmpdir/home" "$tmpdir/bundle"
-          gh api "repos/${BUILDS_REPO}/contents/${BUNDLE_PATH}?ref=main"             --jq '.content' | base64 -d > "$tmpdir/bundle/${BUNDLE_PATH}"
+          gh api -H 'Accept: application/vnd.github.raw' "repos/${BUILDS_REPO}/contents/${BUNDLE_PATH}?ref=main" > "$tmpdir/bundle/${BUNDLE_PATH}"
           tar -xzf "$tmpdir/bundle/${BUNDLE_PATH}" -C "$tmpdir/home"
           chmod -R a+rwX "$tmpdir/home"
 
