@@ -1,70 +1,70 @@
 name: Update Claude Config Bundle
 
 on:
-  workflow_dispatch:
+  work flow_dispatch:
   schedule:
-    - cron: '17 3 * * 1'
+    - cron: '17 3  * * 1'
 
 permissions:
   contents: read
 
 jobs:
-  update-bundle:
+   update-bundle:
     runs-on: ubuntu-latest
-    env:
-      CLAUDE_CLI_IMAGE: ghcr.io/vvvvy531/claude-code-cli@sha256:3c1ac4c0e503064d4e35b65ddbe7ccba44f33a6dc432ca902776c9c5fa7092be
-      BUILDS_REPO: vvvvy531/myproject-linux-builds
-      BUNDLE_PATH: claude-config-bundle.tar.gz
+     env:
+      CLAUDE_CLI_IMAGE: ghcr.io/vvvvy 531/claude-code-cli@sha256:3c1ac4c0e503064d4e 35b65ddbe7ccba44f33a6dc432ca902776c9c5fa7092b e
+      BUILDS_REPO: vvvvy531/myproject-linux -builds
+      BUNDLE_PATH: claude-config-bund le.tar.gz
     steps:
-      - name: Checkout updater scripts
-        uses: actions/checkout@v4
+      - name: Checkout u pdater scripts
+        uses: actions/checkout @v4
 
       - name: Download current bundle
-        env:
-          GH_TOKEN: ${{ secrets.BUILDS_REPO_TOKEN }}
+         env:
+          GH_TOKEN: ${{ secrets.BU ILDS_REPO_TOKEN }}
         run: |
-          set -euo pipefail
-          tmpdir="$(mktemp -d "${RUNNER_TEMP:-/tmp}/claude-bundle.XXXXXX")"
-          echo "tmpdir=$tmpdir" >> "$GITHUB_ENV"
-          mkdir -p "$tmpdir/home" "$tmpdir/bundle"
-          gh api "repos/${BUILDS_REPO}/contents/${BUNDLE_PATH}?ref=main" \
-            --jq '.content' | base64 -d > "$tmpdir/bundle/${BUNDLE_PATH}"
-          tar -xzf "$tmpdir/bundle/${BUNDLE_PATH}" -C "$tmpdir/home"
-          chmod -R a+rwX "$tmpdir/home"
+          s et -euo pipefail
+          tmpdir="$(mktemp - d "${RUNNER_TEMP:-/tmp}/claude-bundle.XXXXXX" )"
+          echo "tmpdir=$tmpdir" >> "$GITHU B_ENV"
+          mkdir -p "$tmpdir/home" "$tm pdir/bundle"
+          gh api "repos/${BUILDS _REPO}/contents/${BUNDLE_PATH}?ref=main" \
+             --jq '.content' | base64 -d > "$tmp dir/bundle/${BUNDLE_PATH}"
+          tar -xzf  "$tmpdir/bundle/${BUNDLE_PATH}" -C "$tmpdir/ home"
+          chmod -R a+rwX "$tmpdir/home" 
 
       - name: Update Claude plugins
-        run: |
+         run: |
           set -euo pipefail
-          docker pull "$CLAUDE_CLI_IMAGE"
-          docker run --rm \
-            -v "$tmpdir/home:/home/claude" \
-            -e HOME=/home/claude \
+           docker pull "$CLAUDE_CLI_IMAGE"
+          do cker run --rm \
+            -v "$tmpdir/home: /home/claude" \
+            -e HOME=/home/cla ude \
             "$CLAUDE_CLI_IMAGE" \
-            plugin update --all
+             plugin update --all
 
-      - name: Rebuild sanitized bundle
+      - name: Reb uild sanitized bundle
         run: |
-          set -euo pipefail
-          chmod +x ci/claude-config-bundle/create-bundle.sh
-          ci/claude-config-bundle/create-bundle.sh "$tmpdir/home" "$tmpdir/${BUNDLE_PATH}"
-          sha256sum "$tmpdir/${BUNDLE_PATH}" | tee "$tmpdir/${BUNDLE_PATH}.sha256"
+           set -euo pipefail
+          chmod +x ci/cla ude-config-bundle/create-bundle.sh
+           ci/claude-config-bundle/create-bundle.sh "$tm pdir/home" "$tmpdir/${BUNDLE_PATH}"
+           sha256sum "$tmpdir/${BUNDLE_PATH}" | tee "$t mpdir/${BUNDLE_PATH}.sha256"
 
-      - name: Upload updated bundle
+      - name: U pload updated bundle
         env:
-          GH_TOKEN: ${{ secrets.BUILDS_REPO_TOKEN }}
-        run: |
+          G H_TOKEN: ${{ secrets.LINUX_BUILDS_PAT }}
+         run: |
           set -euo pipefail
-          content="$(base64 -w0 "$tmpdir/${BUNDLE_PATH}")"
-          existing_sha="$(gh api "repos/${BUILDS_REPO}/contents/${BUNDLE_PATH}?ref=main" --jq '.sha')"
+           content="$(base64 -w0 "$tmpdir/${BUNDLE_ PATH}")"
+          existing_sha="$(gh api "re pos/${BUILDS_REPO}/contents/${BUNDLE_PATH}?re f=main" --jq '.sha')"
           jq -n \
-            --arg message 'Update Claude config bundle after plugin refresh' \
-            --arg content "$content" \
-            --arg sha "$existing_sha" \
-            --arg branch main \
-            '{message: $message, content: $content, sha: $sha, branch: $branch}' \
-            > "$tmpdir/update-bundle.json"
-          commit_sha="$(gh api --method PUT "repos/${BUILDS_REPO}/contents/${BUNDLE_PATH}" \
-            --input "$tmpdir/update-bundle.json" --jq '.commit.sha')"
-          bundle_sha256="$(cut -d' ' -f1 "$tmpdir/${BUNDLE_PATH}.sha256")"
-          echo "Updated ${BUILDS_REPO}@${commit_sha}"
-          echo "Bundle sha256: ${bundle_sha256}"
+             --arg message 'Update Claude config bu ndle after plugin refresh' \
+            --ar g content "$content" \
+            --arg sha  "$existing_sha" \
+            --arg branch ma in \
+            '{message: $message, content : $content, sha: $sha, branch: $branch}' \
+             > "$tmpdir/update-bundle.json"
+           commit_sha="$(gh api --method PUT "repo s/${BUILDS_REPO}/contents/${BUNDLE_PATH}" \
+             --input "$tmpdir/update-bundle.jso n" --jq '.commit.sha')"
+          bundle_sha2 56="$(cut -d' ' -f1 "$tmpdir/${BUNDLE_PATH}.s ha256")"
+          echo "Updated ${BUILDS_REP O}@${commit_sha}"
+          echo "Bundle sha2 56: ${bundle_sha256}" 
