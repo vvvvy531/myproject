@@ -32,12 +32,8 @@ jobs:
           chmod -R a+rwX "$tmpdir/home"
 
       - name: Update Claude plugins
-        env:
-          GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
-          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
         run: |
           set -euo pipefail
-          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USERNAME" --password-stdin
           docker pull "$CLAUDE_CLI_IMAGE"
           docker run --rm             -v "$tmpdir/home:/home/claude"             -e HOME=/home/claude             "$CLAUDE_CLI_IMAGE"             plugin update --all
 
