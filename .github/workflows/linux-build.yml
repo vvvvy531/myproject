@@ -301,7 +301,7 @@ jobs:
 
       - name: Restore UE build products cache from private builds repo
 
-        if: steps.runtime_guard.outputs.should_run == 'true' && (github.event_name != 'workflow_dispatch' || inputs.static_analysis != 'true')
+        if: steps.runtime_guard.outputs.should_run == 'true' && vars.ENABLE_UE_BUILD_PRODUCTS_CACHE == 'true' && (github.event_name != 'workflow_dispatch' || inputs.static_analysis != 'true')
 
         shell: bash
 
@@ -760,7 +760,7 @@ jobs:
 
       - name: Save UE build products cache to private builds repo
 
-        if: steps.runtime_guard.outputs.should_run == 'true' && always()
+        if: steps.runtime_guard.outputs.should_run == 'true' && vars.ENABLE_UE_BUILD_PRODUCTS_CACHE == 'true' && always()
 
         continue-on-error: true
 
