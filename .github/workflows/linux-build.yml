@@ -18,6 +18,22 @@ name: Private Source Linux Build
 
         options: ["false", "true"]
 
+      source_ref:
+
+        description: Private source ref to build
+
+        required: false
+
+        default: main
+
+      source_sha:
+
+        description: Optional private source SHA to verify
+
+        required: false
+
+        default: ""
+
   repository_dispatch:
 
     types: [linux-build]
@@ -45,9 +61,9 @@ env:
 
   UE_IMAGE: ghcr.io/epicgames/unreal-engine:dev-slim-5.7.4
 
-  SOURCE_REF: ${{ github.event.client_payload.source_ref || 'main' }}
+  SOURCE_REF: ${{ github.event.client_payload.source_ref || inputs.source_ref || 'main' }}
 
-  SOURCE_SHA: ${{ github.event.client_payload.source_sha || '' }}
+  SOURCE_SHA: ${{ github.event.client_payload.source_sha || inputs.source_sha || '' }}
 
 jobs:
 
