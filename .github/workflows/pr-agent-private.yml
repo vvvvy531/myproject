@@ -155,8 +155,7 @@ jobs:
               })
               print(f"/chat/completions ok: HTTP {status} for model {probe_model}")
           except urllib.error.HTTPError as e:
-              detail = e.read(512).decode('utf-8', 'replace')
-              print(f"/chat/completions failed: HTTP {e.code} for model {probe_model}: {detail}")
+              print(f"/chat/completions failed: HTTP {e.code} for model {probe_model}")
               raise
           except Exception as e:
               print(f"/chat/completions failed: {type(e).__name__}: {e}")
