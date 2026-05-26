@@ -56,9 +56,8 @@ jobs:
           set -euo pipefail
           content="$(base64 -w0 "$tmpdir/${BUNDLE_PATH}")"
           existing_sha="$(gh api "repos/${BUILDS_REPO}/contents/${BUNDLE_PATH}?ref=main" --jq '.sha')"
-          message="Update Claude config bundle after plugin refresh"
           jq -n \
-            --arg message "$message" \
+            --arg message 'Update Claude config bundle after plugin refresh' \
             --arg content "$content" \
             --arg sha "$existing_sha" \
             --arg branch main \
