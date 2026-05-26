@@ -142,7 +142,7 @@ jobs:
           printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USERNAME" --password-stdin
           docker pull "$CLAUDE_CLI_IMAGE"
           curl -fsS "${ANTHROPIC_BASE_URL%/}/v1/models" >/dev/null
-          docker run --rm --network host "$CLAUDE_CLI_IMAGE" bash -lc 'curl -fsS "${ANTHROPIC_BASE_URL%/}/v1/models" >/dev/null'
+          docker run --rm --network host -e ANTHROPIC_BASE_URL "$CLAUDE_CLI_IMAGE" bash -lc 'curl -fsS "${ANTHROPIC_BASE_URL%/}/v1/models" >/dev/null'
 
           set +e
           docker run --rm --network host \
@@ -205,6 +205,7 @@ jobs:
           rm -rf ~/.claude/projects ~/.claude/sessions ~/.claude/statsig ~/.claude/todos || true
           rm -f ~/.bash_history ~/.zsh_history ~/.git-credentials || true
           git config --global --unset-all credential.helper || true
+
 
 
 
