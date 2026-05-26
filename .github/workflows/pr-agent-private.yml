@@ -113,25 +113,90 @@ jobs:
             exit 1
           fi
 
+      - name: Probe OpenAI-compatible endpoint
+        shell: bash
+        env:
+          OPENAI_KEY: ${{ secrets.CLIPROXY_API_KEY }}
+          OPENAI_BASE_URL: ${{ vars.OPENAI_BASE_URL }}
+          OPENAI_MODEL: ${{ vars.OPENAI_MODEL || 'gpt-5.5' }}
+        run: |
+          set +x
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, sys, urllib.request, urllib.error
+          base = os.environ['OPENAI_BASE_URL'].rstrip('/')
+          key = os.environ['OPENAI_KEY']
+          model = os.environ['OPENAI_MODEL']
+          probe_model = model.removeprefix('openai/')
+          def post(path, payload, timeout=60):
+              req = urllib.request.Request(
+                  base + path,
+                  data=json.dumps(payload).encode(),
+                  headers={'Authorization': f'Bearer {key}', 'Content-Type': 'application/json'},
+                  method='POST',
+              )
+              with urllib.request.urlopen(req, timeout=timeout) as r:
+                  return r.status, r.read(2048).decode('utf-8', 'replace')
+          req = urllib.request.Request(base + '/models', headers={'Authorization': f'Bearer {key}'})
+          try:
+              with urllib.request.urlopen(req, timeout=30) as r:
+                  body = json.loads(r.read().decode('utf-8', 'replace'))
+                  ids = [m.get('id') for m in body.get('data', []) if isinstance(m, dict)]
+                  print(f"/models ok: {len(ids)} models")
+                  print('model sample:', ', '.join(ids[:20]))
+          except Exception as e:
+              print(f"/models probe failed: {type(e).__name__}")
+          try:
+              status, body = post('/chat/completions', {
+                  'model': probe_model,
+                  'messages': [{'role': 'user', 'content': 'Reply with OK only.'}],
+                  'max_tokens': 8,
+                  'temperature': 0,
+              })
+              print(f"/chat/completions ok: HTTP {status} for model {probe_model}")
+          except urllib.error.HTTPError as e:
+              print(f"/chat/completions failed: HTTP {e.code} for model {probe_model}")
+              sys.exit(1)
+          except Exception as e:
+              print(f"/chat/completions failed: {type(e).__name__} for model {probe_model}")
+              sys.exit(1)
+          PY
+
       - name: Run PR-Agent review
         working-directory: source
         shell: bash
         env:
           GITHUB__USER_TOKEN: ${{ github.event_name == 'pull_request' && github.token || secrets.PRIVATE_SOURCE_PAT }}
-          OPENAI_KEY: ${{ secrets.OPENAI_KEY }}
-          OPENAI__KEY: ${{ secrets.OPENAI_KEY }}
+          OPENAI_KEY: ${{ secrets.CLIPROXY_API_KEY }}
+          OPENAI__KEY: ${{ secrets.CLIPROXY_API_KEY }}
           OPENAI.API_BASE: ${{ vars.OPENAI_BASE_URL }}
           OPENAI__API_BASE: ${{ vars.OPENAI_BASE_URL }}
           config.model: ${{ vars.OPENAI_MODEL || 'gpt-5.5' }}
           config.weak_model: ${{ vars.OPENAI_MODEL || 'gpt-5.5' }}
           config.fallback_models: "[\"${{ vars.OPENAI_MODEL || 'gpt-5.5' }}\"]"
           config.custom_model_max_tokens: '128000'
-          config.ai_timeout: '300'
+          config.ai_timeout: '900'
           config.verbosity_level: '1'
           pr_reviewer.extra_instructions: Focus on Linux build safety, Unreal Engine build issues, CI/CD, release artifacts, shell commands, secrets leakage, permissions, and supply-chain risks. Do not repeat large code blocks.
         run: |
           set +x
-          pr-agent --pr_url "$PR_URL" review
+          set +e
+          set -o pipefail
+          pr-agent --pr_url "$PR_URL" review 2>&1 | tee pr-agent-review.log
+          pipeline_status=(${PIPESTATUS[@]})
+          pr_agent_status=${pipeline_status[0]:-1}
+          tee_status=${pipeline_status[1]:-1}
+          set +o pipefail
+          set -e
+          if [[ "$tee_status" -ne 0 ]]; then
+            echo "tee failed while capturing PR-Agent output" >&2
+            exit "$tee_status"
+          fi
+          if grep -E "(Failed to review PR|Failed to generate prediction|Error during LLM inference|litellm\.Timeout|Traceback)" pr-agent-review.log >/dev/null; then
+            echo "PR-Agent reported an internal LLM/review failure" >&2
+            exit 1
+          fi
+          exit "$pr_agent_status"
 
 
       - name: Mark private PR-Agent status success
