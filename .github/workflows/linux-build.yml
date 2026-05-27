@@ -160,8 +160,7 @@ jobs:
           set -euo pipefail
           cache_dir="sccache/${{ runner.os }}"
           mkdir -p .sccache-cache .cache-restore
-          if git clone --depth 1 --branch linux-artifacts --filter=blob:none "https://x-access-token:${GH_TOKEN}@github.com/${ARTIFACT_REPO}.git" .cache-restore/repo; then
-            git -C .cache-restore/repo lfs pull -I "${cache_dir}/sccache-cache.tar.zst" || true
+          if git clone --depth 1 --branch linux-artifacts "https://x-access-token:${GH_TOKEN}@github.com/${ARTIFACT_REPO}.git" .cache-restore/repo; then
           fi
           if [[ -s ".cache-restore/repo/${cache_dir}/sccache-cache.tar.zst" ]]; then
             sudo tar --zstd -xf ".cache-restore/repo/${cache_dir}/sccache-cache.tar.zst" -C .sccache-cache || true
@@ -180,8 +179,7 @@ jobs:
           set -euo pipefail
           cache_dir="ue-build-products/${{ runner.os }}"
           mkdir -p .build-cache-restore
-          if git clone --depth 1 --branch linux-artifacts --filter=blob:none "https://x-access-token:${GH_TOKEN}@github.com/${ARTIFACT_REPO}.git" .build-cache-restore/repo; then
-            git -C .build-cache-restore/repo lfs pull -I "${cache_dir}/ue-build-products.tar.zst" || true
+          if git clone --depth 1 --branch linux-artifacts "https://x-access-token:${GH_TOKEN}@github.com/${ARTIFACT_REPO}.git" .build-cache-restore/repo; then
           fi
           if [[ -s ".build-cache-restore/repo/${cache_dir}/ue-build-products.tar.zst" ]]; then
             echo "== restored UE cache archive =="
@@ -437,13 +435,11 @@ jobs:
               git -C .artifact-repo/sccache checkout --orphan linux-artifacts
               git -C .artifact-repo/sccache rm -rf . >/dev/null 2>&1 || true
             fi
-            git -C .artifact-repo/sccache lfs install --local
-            git -C .artifact-repo/sccache lfs track "*.tar.gz" "*.tar.zst"
             mkdir -p ".artifact-repo/sccache/${cache_dir}"
             cp dist/sccache-cache.tar.zst dist/sccache-cache-size.txt ".artifact-repo/sccache/${cache_dir}/"
             git -C .artifact-repo/sccache config user.name "github-actions[bot]"
             git -C .artifact-repo/sccache config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git -C .artifact-repo/sccache add .gitattributes "${cache_dir}"
+            git -C .artifact-repo/sccache add "${cache_dir}"
             if ! git -C .artifact-repo/sccache diff --cached --quiet; then
               git -C .artifact-repo/sccache checkout --orphan linux-artifacts-next
               git -C .artifact-repo/sccache add .
@@ -485,13 +481,11 @@ jobs:
               git -C .artifact-repo/ue-build-products checkout --orphan linux-artifacts
               git -C .artifact-repo/ue-build-products rm -rf . >/dev/null 2>&1 || true
             fi
-            git -C .artifact-repo/ue-build-products lfs install --local
-            git -C .artifact-repo/ue-build-products lfs track "*.tar.gz" "*.tar.zst"
             mkdir -p ".artifact-repo/ue-build-products/${cache_dir}"
             cp dist/ue-build-products.tar.zst dist/ue-build-products-size.txt dist/ue-build-products-files.txt dist/ue-build-products-object-sample.txt ".artifact-repo/ue-build-products/${cache_dir}/"
             git -C .artifact-repo/ue-build-products config user.name "github-actions[bot]"
             git -C .artifact-repo/ue-build-products config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git -C .artifact-repo/ue-build-products add .gitattributes "${cache_dir}"
+            git -C .artifact-repo/ue-build-products add "${cache_dir}"
             if ! git -C .artifact-repo/ue-build-products diff --cached --quiet; then
               git -C .artifact-repo/ue-build-products checkout --orphan linux-artifacts-next
               git -C .artifact-repo/ue-build-products add .
@@ -530,8 +524,6 @@ jobs:
             git -C .artifact-repo/linux-build checkout --orphan linux-artifacts
             git -C .artifact-repo/linux-build rm -rf . >/dev/null 2>&1 || true
           fi
-          git -C .artifact-repo/linux-build lfs install --local
-          git -C .artifact-repo/linux-build lfs track "*.tar.gz" "*.tar.zst"
           rm -rf ".artifact-repo/linux-build/${artifact_dir}"
           mkdir -p ".artifact-repo/linux-build/${artifact_dir}"
           cat > ".artifact-repo/linux-build/${artifact_dir}/build-summary.md" <<EOF
@@ -555,7 +547,7 @@ jobs:
           done
           git -C .artifact-repo/linux-build config user.name "github-actions[bot]"
           git -C .artifact-repo/linux-build config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git -C .artifact-repo/linux-build add .gitattributes "${artifact_dir}"
+          git -C .artifact-repo/linux-build add "${artifact_dir}"
           git -C .artifact-repo/linux-build add -u "${artifact_dir}"
           if ! git -C .artifact-repo/linux-build diff --cached --quiet; then
             git -C .artifact-repo/linux-build checkout --orphan linux-artifacts-next
@@ -776,8 +768,6 @@ jobs:
             git -C artifact-repo checkout --orphan linux-artifacts
             git -C artifact-repo rm -rf . >/dev/null 2>&1 || true
           fi
-          git -C artifact-repo lfs install --local
-          git -C artifact-repo lfs track "*.sarif"
           rm -rf "artifact-repo/${artifact_dir}"
           mkdir -p "artifact-repo/${artifact_dir}"
           cp "$REPORT_DIR/codeql-results.sarif" "$REPORT_DIR/codeql-summary.md" "$REPORT_DIR/source-sha.txt" "artifact-repo/${artifact_dir}/"
@@ -787,7 +777,7 @@ jobs:
           EOF
           git -C artifact-repo config user.name "github-actions[bot]"
           git -C artifact-repo config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git -C artifact-repo add .gitattributes "${artifact_dir}"
+          git -C artifact-repo add "${artifact_dir}"
           git -C artifact-repo add -u "${artifact_dir}"
           if ! git -C artifact-repo diff --cached --quiet; then
             git -C artifact-repo checkout --orphan linux-artifacts-next
