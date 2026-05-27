@@ -65,6 +65,44 @@ jobs:
               echo "EOF"
             } >> "$GITHUB_OUTPUT"
           fi
+      - name: SonarCloud API preflight diagnostics
+        if: github.event_name == 'workflow_dispatch' && inputs.sonar_preflight_only == 'true'
+        shell: bash
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_PROJECT_KEY: ${{ vars.SONAR_PROJECT_KEY }}_ci_validation
+          SONAR_ORGANIZATION: ${{ vars.SONAR_ORGANIZATION }}
+        run: |
+          set -u
+          auth=(-u "${SONAR_TOKEN}:")
+          call() {
+            local method="$1"; shift
+            local url="$1"; shift
+            echo "== ${method} ${url} =="
+            set +e
+            code=$(curl -sS -w '%{http_code}' -o /tmp/sonar-body.json "${auth[@]}" -X "$method" "$url" "$@")
+            rc=$?
+            set -e
+            echo "curl_rc=${rc} http=${code}"
+            python3 - <<'PY' || true
+import json
+from pathlib import Path
+text=Path('/tmp/sonar-body.json').read_text(errors='replace') if Path('/tmp/sonar-body.json').exists() else ''
+try:
+    print(json.dumps(json.loads(text), indent=2)[:4000])
+except Exception:
+    print(text[:4000])
+PY
+          }
+          call GET "https://sonarcloud.io/api/qualityprofiles/search?organization=${SONAR_ORGANIZATION}"
+          call GET "https://sonarcloud.io/api/qualityprofiles/search?organization=${SONAR_ORGANIZATION}&language=cpp"
+          call GET "https://sonarcloud.io/api/qualityprofiles/search?organization=${SONAR_ORGANIZATION}&project=${SONAR_PROJECT_KEY}"
+          call GET "https://sonarcloud.io/api/projects/search?organization=${SONAR_ORGANIZATION}&projects=${SONAR_PROJECT_KEY}"
+          call POST "https://sonarcloud.io/api/projects/create" --data-urlencode "organization=${SONAR_ORGANIZATION}" --data-urlencode "project=${SONAR_PROJECT_KEY}" --data-urlencode "name=${SONAR_PROJECT_KEY}"
+          call POST "https://sonarcloud.io/api/qualityprofiles/add_project" --data-urlencode "project=${SONAR_PROJECT_KEY}" --data-urlencode "language=cpp" --data-urlencode "qualityProfile=Sonar way"
+          call GET "https://sonarcloud.io/api/qualityprofiles/search?organization=${SONAR_ORGANIZATION}&project=${SONAR_PROJECT_KEY}"
+          echo "Sonar preflight complete"
+
       - name: Report skipped Linux build to private source issues
         if: false
         shell: bash
