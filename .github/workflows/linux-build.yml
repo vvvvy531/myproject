@@ -95,16 +95,7 @@ jobs:
           call GET "https://sonarcloud.io/api/qualityprofiles/search?organization=${SONAR_ORGANIZATION}&project=${SONAR_PROJECT_KEY}"
           call GET "https://sonarcloud.io/api/projects/search?organization=${SONAR_ORGANIZATION}&projects=${SONAR_PROJECT_KEY}"
           call POST "https://sonarcloud.io/api/projects/create" --data-urlencode "organization=${SONAR_ORGANIZATION}" --data-urlencode "project=${SONAR_PROJECT_KEY}" --data-urlencode "name=${SONAR_PROJECT_KEY}"
-          cpp_profile_key=$(python3 - <<'PY2'
-import json
-from pathlib import Path
-data=json.loads(Path('/tmp/sonar-cpp-profiles.json').read_text())
-for p in data.get('profiles', []):
-    if p.get('language') == 'cpp' and p.get('name') == 'Sonar way':
-        print(p.get('key', ''))
-        break
-PY2
-)
+          cpp_profile_key=$(python3 -c "import json; from pathlib import Path; data=json.loads(Path('/tmp/sonar-cpp-profiles.json').read_text()); print(next((p.get('key','') for p in data.get('profiles', []) if p.get('language')=='cpp' and p.get('name')=='Sonar way'), ''))")
           if [[ -n "$cpp_profile_key" ]]; then
             call POST "https://sonarcloud.io/api/qualityprofiles/add_project" --data-urlencode "project=${SONAR_PROJECT_KEY}" --data-urlencode "key=${cpp_profile_key}"
           else
