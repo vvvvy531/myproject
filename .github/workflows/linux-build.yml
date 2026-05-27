@@ -542,25 +542,26 @@ jobs:
           fi
           codeql_status="unknown"
           if [[ -d dist/codeql-sarif ]]; then codeql_status="completed"; fi
-          cat > "$body" <<EOF
-          # Static review result
-          - Source repo: ${SOURCE_REPO}
-          - Source ref: ${SOURCE_REF}
-          - Source sha: ${SOURCE_SHA:-unknown}
-          - Public run: ${run_url}
-          - SonarCloud project: ${{ vars.SONAR_PROJECT_KEY }}_ci_validation
-          - SonarCloud scanner exit: ${SONAR_EXIT_CODE:-not-run}
-          - CodeQL status: ${codeql_status}
-          - Time: $(date -u +%FT%TZ)
-
-          ## SonarCloud log tail
-          ```text
-          $(cat "$sonar_tail")
-          ```
-          EOF
+          {
+            echo "# Static review result"
+            echo "- Source repo: ${SOURCE_REPO}"
+            echo "- Source ref: ${SOURCE_REF}"
+            echo "- Source sha: ${SOURCE_SHA:-unknown}"
+            echo "- Public run: ${run_url}"
+            echo "- SonarCloud project: ${{ vars.SONAR_PROJECT_KEY }}_ci_validation"
+            echo "- SonarCloud scanner exit: ${SONAR_EXIT_CODE:-not-run}"
+            echo "- CodeQL status: ${codeql_status}"
+            echo "- Time: $(date -u +%FT%TZ)"
+            echo
+            echo "## SonarCloud log tail"
+            echo "~~~text"
+            cat "$sonar_tail"
+            echo "~~~"
+          } > "$body"
           issue="$(gh issue list -R "$SOURCE_REPO" --state all --search "$title in:title" --json number,title --jq '.[] | select(.title == "CI: Static review result") | .number' | head -n 1 || true)"
           if [[ -z "$issue" ]]; then
-            issue="$(gh issue create -R "$SOURCE_REPO" --title "$title" --body-file "$body" --json number --jq .number)"
+            gh issue create -R "$SOURCE_REPO" --title "$title" --body-file "$body" >/dev/null
+            issue="$(gh issue list -R "$SOURCE_REPO" --state all --search "$title in:title" --json number,title --jq '.[] | select(.title == "CI: Static review result") | .number' | head -n 1 || true)"
           else
             gh issue edit "$issue" -R "$SOURCE_REPO" --body-file "$body" >/dev/null
             gh issue reopen "$issue" -R "$SOURCE_REPO" >/dev/null 2>&1 || true
@@ -569,9 +570,11 @@ jobs:
             gh issue comment "$issue" -R "$SOURCE_REPO" --body "Static review SonarCloud scanner succeeded for ${SOURCE_SHA:-unknown}. Run: ${run_url}" >/dev/null || true
           fi
       - name: Fail job if SonarCloud review failed
-        if: steps.runtime_guard.outputs.should_run == 'true' && (github.event_name != 'workflow_dispatch' || inputs.sonar_preflight_only != 'true') && github.event_name == 'workflow_dispatch' && inputs.static_analysis == 'true' && always() && steps.sonar_scan.outputs.exit_code != '0'
+        if: steps.runtime_guard.outputs.should_run == 'true' && (github.event_name != 'workflow_dispatch' || inputs.sonar_preflight_only != 'true') && github.event_name == 'workflow_dispatch' && inputs.static_analysis == 'true' && always()
         shell: bash
-        run: exit 1
+        run: |
+          code="$(cat dist/sonarcloud-exit-code.txt 2>/dev/null || echo 1)"
+          [[ "$code" == "0" ]] || exit 1
 
       - name: Save sccache compiler cache to private builds repo
         if: steps.runtime_guard.outputs.should_run == 'true' && (github.event_name != 'workflow_dispatch' || inputs.sonar_preflight_only != 'true') && vars.ENABLE_SCCACHE == 'true' && always()
