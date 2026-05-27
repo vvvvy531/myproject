@@ -73,7 +73,7 @@ jobs:
         shell: bash
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_PROJECT_KEY: ${{ vars.SONAR_PROJECT_KEY }}_ci_validation
+          SONAR_PROJECT_KEY: ${{ vars.SONAR_PROJECT_KEY }}_ci_validation_${{ github.run_id }}
           SONAR_ORGANIZATION: ${{ vars.SONAR_ORGANIZATION }}
         run: |
           set -u
@@ -91,10 +91,25 @@ jobs:
           }
           call GET "https://sonarcloud.io/api/qualityprofiles/search?organization=${SONAR_ORGANIZATION}"
           call GET "https://sonarcloud.io/api/qualityprofiles/search?organization=${SONAR_ORGANIZATION}&language=cpp"
+          cp /tmp/sonar-body.json /tmp/sonar-cpp-profiles.json || true
           call GET "https://sonarcloud.io/api/qualityprofiles/search?organization=${SONAR_ORGANIZATION}&project=${SONAR_PROJECT_KEY}"
           call GET "https://sonarcloud.io/api/projects/search?organization=${SONAR_ORGANIZATION}&projects=${SONAR_PROJECT_KEY}"
           call POST "https://sonarcloud.io/api/projects/create" --data-urlencode "organization=${SONAR_ORGANIZATION}" --data-urlencode "project=${SONAR_PROJECT_KEY}" --data-urlencode "name=${SONAR_PROJECT_KEY}"
-          call POST "https://sonarcloud.io/api/qualityprofiles/add_project" --data-urlencode "project=${SONAR_PROJECT_KEY}" --data-urlencode "language=cpp" --data-urlencode "qualityProfile=Sonar way"
+          cpp_profile_key=$(python3 - <<'PY2'
+import json
+from pathlib import Path
+data=json.loads(Path('/tmp/sonar-cpp-profiles.json').read_text())
+for p in data.get('profiles', []):
+    if p.get('language') == 'cpp' and p.get('name') == 'Sonar way':
+        print(p.get('key', ''))
+        break
+PY2
+)
+          if [[ -n "$cpp_profile_key" ]]; then
+            call POST "https://sonarcloud.io/api/qualityprofiles/add_project" --data-urlencode "project=${SONAR_PROJECT_KEY}" --data-urlencode "key=${cpp_profile_key}"
+          else
+            echo "No C++ Sonar way profile key found"
+          fi
           call GET "https://sonarcloud.io/api/qualityprofiles/search?organization=${SONAR_ORGANIZATION}&project=${SONAR_PROJECT_KEY}"
           echo "Sonar preflight complete"
 
@@ -438,13 +453,16 @@ jobs:
         shell: bash
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_PROJECT_KEY: ${{ vars.SONAR_PROJECT_KEY }}_ci_validation
+          SONAR_PROJECT_KEY: ${{ vars.SONAR_PROJECT_KEY }}_ci_validation_${{ github.run_id }}
           SONAR_ORGANIZATION: ${{ vars.SONAR_ORGANIZATION }}
         run: |
           set -euo pipefail
           auth=(-u "${SONAR_TOKEN}:")
           curl -fsS "${auth[@]}" -X POST "https://sonarcloud.io/api/projects/create"             --data-urlencode "organization=${SONAR_ORGANIZATION}"             --data-urlencode "project=${SONAR_PROJECT_KEY}"             --data-urlencode "name=${SONAR_PROJECT_KEY}" >/tmp/sonar-create.json || true
-          curl -fsS "${auth[@]}" -X POST "https://sonarcloud.io/api/qualityprofiles/add_project"             --data-urlencode "project=${SONAR_PROJECT_KEY}"             --data-urlencode "language=cpp"             --data-urlencode "qualityProfile=Sonar way" >/tmp/sonar-profile-cpp.json || true
+          cpp_profile_key=$(curl -fsS "${auth[@]}" "https://sonarcloud.io/api/qualityprofiles/search?organization=${SONAR_ORGANIZATION}&language=cpp" | python3 -c "import json,sys; data=json.load(sys.stdin); print(next((p.get('key','') for p in data.get('profiles',[]) if p.get('name')=='Sonar way'), ''))")
+          if [[ -n "$cpp_profile_key" ]]; then
+            curl -fsS "${auth[@]}" -X POST "https://sonarcloud.io/api/qualityprofiles/add_project" --data-urlencode "project=${SONAR_PROJECT_KEY}" --data-urlencode "key=${cpp_profile_key}" >/tmp/sonar-profile-cpp.json || true
+          fi
           curl -fsS "${auth[@]}" "https://sonarcloud.io/api/qualityprofiles/search?organization=${SONAR_ORGANIZATION}&project=${SONAR_PROJECT_KEY}" | python3 -m json.tool | head -120 || true
 
       - name: Run SonarCloud advanced analysis
@@ -456,7 +474,7 @@ jobs:
           projectBaseDir: source
           scannerVersion: 7.3.0.5189
           args: >
-            -Dsonar.projectKey=${{ vars.SONAR_PROJECT_KEY }}_ci_validation
+            -Dsonar.projectKey=${{ vars.SONAR_PROJECT_KEY }}_ci_validation_${{ github.run_id }}
             -Dsonar.organization=${{ vars.SONAR_ORGANIZATION }}
             -Dsonar.sources=.
             -Dsonar.cfamily.compile-commands=.sonar/bw-output/compile_commands.json
