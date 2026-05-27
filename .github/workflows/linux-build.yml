@@ -450,7 +450,7 @@ jobs:
           test -s source/.sonar/bw-output/compile_commands.json
           ls -lh source/.sonar/bw-output
       - name: Prepare SonarCloud validation project
-        if: steps.runtime_guard.outputs.should_run == 'true' && (github.event_name != 'workflow_dispatch' || inputs.sonar_preflight_only != 'true') && github.event_name == 'workflow_dispatch' && inputs.static_analysis == 'true' && steps.sonar.outputs.enabled == 'true'
+        if: false
         shell: bash
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
@@ -475,20 +475,36 @@ jobs:
           curl -fsS "${auth[@]}" "https://sonarcloud.io/api/qualityprofiles/search?organization=${SONAR_ORGANIZATION}&project=${SONAR_PROJECT_KEY}" | python3 -m json.tool | head -120 || true
 
       - name: Run SonarCloud advanced analysis
+        id: sonar_scan
         if: steps.runtime_guard.outputs.should_run == 'true' && (github.event_name != 'workflow_dispatch' || inputs.sonar_preflight_only != 'true') && github.event_name == 'workflow_dispatch' && inputs.static_analysis == 'true' && steps.sonar.outputs.enabled == 'true'
-        uses: SonarSource/sonarqube-scan-action@v8
+        shell: bash
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-        with:
-          projectBaseDir: source
-          scannerVersion: 7.3.0.5189
-          args: >
-            -Dsonar.projectKey=${{ vars.SONAR_PROJECT_KEY }}_ue_ci_review_perms
-            -Dsonar.organization=${{ vars.SONAR_ORGANIZATION }}
-            -Dsonar.token=${{ secrets.SONAR_TOKEN }}
-            -Dsonar.sources=.
-            -Dsonar.cfamily.compile-commands=.sonar/bw-output/compile_commands.json
-            -Dsonar.exclusions=**/Binaries/**,**/DerivedDataCache/**,**/Intermediate/**,**/Saved/**,**/.git/**,**/.github/**,**/graphify-out/**,**/.sonar/build-wrapper-linux-x86/**
+          SONAR_PROJECT_KEY: ${{ vars.SONAR_PROJECT_KEY }}_ci_validation
+          SONAR_ORGANIZATION: ${{ vars.SONAR_ORGANIZATION }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          export SONAR_SCANNER_VERSION=8.0.1.6346
+          export SONAR_SCANNER_HOME="$HOME/.sonar/sonar-scanner-${SONAR_SCANNER_VERSION}-linux-x64"
+          curl --create-dirs -sSLo "$HOME/.sonar/sonar-scanner.zip" "https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-${SONAR_SCANNER_VERSION}-linux-x64.zip"
+          unzip -o "$HOME/.sonar/sonar-scanner.zip" -d "$HOME/.sonar/" >/dev/null
+          export PATH="$SONAR_SCANNER_HOME/bin:$PATH"
+          set +e
+          (
+            cd source
+            sonar-scanner \
+              -Dsonar.organization="${SONAR_ORGANIZATION}" \
+              -Dsonar.projectKey="${SONAR_PROJECT_KEY}" \
+              -Dsonar.sources=. \
+              -Dsonar.cfamily.compile-commands=.sonar/bw-output/compile_commands.json \
+              -Dsonar.exclusions=**/Binaries/**,**/DerivedDataCache/**,**/Intermediate/**,**/Saved/**,**/.git/**,**/.github/**,**/graphify-out/**,**/.sonar/build-wrapper-linux-x86/**
+          ) 2>&1 | tee dist/sonarcloud.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          echo "exit_code=${rc}" >> "$GITHUB_OUTPUT"
+          printf "%s\n" "$rc" > dist/sonarcloud-exit-code.txt
+
       - name: Fix CodeQL database permissions after container build
         if: steps.runtime_guard.outputs.should_run == 'true' && (github.event_name != 'workflow_dispatch' || inputs.sonar_preflight_only != 'true') && github.event_name == 'workflow_dispatch' && inputs.static_analysis == 'true'
         shell: bash
@@ -504,6 +520,59 @@ jobs:
           upload: false
           output: dist/codeql-sarif
           category: private-source-advanced
+      - name: Report static review result to private source issues
+        if: steps.runtime_guard.outputs.should_run == 'true' && (github.event_name != 'workflow_dispatch' || inputs.sonar_preflight_only != 'true') && github.event_name == 'workflow_dispatch' && inputs.static_analysis == 'true' && always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.SOURCE_REPO_TOKEN }}
+          SOURCE_REPO: ${{ env.SOURCE_REPO }}
+          SOURCE_REF: ${{ env.SOURCE_REF }}
+          SOURCE_SHA: ${{ env.SOURCE_SHA }}
+          SONAR_EXIT_CODE: ${{ steps.sonar_scan.outputs.exit_code }}
+        run: |
+          set -euo pipefail
+          title="CI: Static review result"
+          body="/tmp/static-review-result.md"
+          run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          sonar_tail="/tmp/sonar-tail.txt"
+          if [[ -f dist/sonarcloud.log ]]; then
+            tail -n 180 dist/sonarcloud.log > "$sonar_tail" || true
+          else
+            echo "dist/sonarcloud.log missing" > "$sonar_tail"
+          fi
+          codeql_status="unknown"
+          if [[ -d dist/codeql-sarif ]]; then codeql_status="completed"; fi
+          cat > "$body" <<EOF
+          # Static review result
+          - Source repo: ${SOURCE_REPO}
+          - Source ref: ${SOURCE_REF}
+          - Source sha: ${SOURCE_SHA:-unknown}
+          - Public run: ${run_url}
+          - SonarCloud project: ${{ vars.SONAR_PROJECT_KEY }}_ci_validation
+          - SonarCloud scanner exit: ${SONAR_EXIT_CODE:-not-run}
+          - CodeQL status: ${codeql_status}
+          - Time: $(date -u +%FT%TZ)
+
+          ## SonarCloud log tail
+          ```text
+          $(cat "$sonar_tail")
+          ```
+          EOF
+          issue="$(gh issue list -R "$SOURCE_REPO" --state all --search "$title in:title" --json number,title --jq '.[] | select(.title == "CI: Static review result") | .number' | head -n 1 || true)"
+          if [[ -z "$issue" ]]; then
+            issue="$(gh issue create -R "$SOURCE_REPO" --title "$title" --body-file "$body" --json number --jq .number)"
+          else
+            gh issue edit "$issue" -R "$SOURCE_REPO" --body-file "$body" >/dev/null
+            gh issue reopen "$issue" -R "$SOURCE_REPO" >/dev/null 2>&1 || true
+          fi
+          if [[ "${SONAR_EXIT_CODE:-1}" == "0" ]]; then
+            gh issue comment "$issue" -R "$SOURCE_REPO" --body "Static review SonarCloud scanner succeeded for ${SOURCE_SHA:-unknown}. Run: ${run_url}" >/dev/null || true
+          fi
+      - name: Fail job if SonarCloud review failed
+        if: steps.runtime_guard.outputs.should_run == 'true' && (github.event_name != 'workflow_dispatch' || inputs.sonar_preflight_only != 'true') && github.event_name == 'workflow_dispatch' && inputs.static_analysis == 'true' && always() && steps.sonar_scan.outputs.exit_code != '0'
+        shell: bash
+        run: exit 1
+
       - name: Save sccache compiler cache to private builds repo
         if: steps.runtime_guard.outputs.should_run == 'true' && (github.event_name != 'workflow_dispatch' || inputs.sonar_preflight_only != 'true') && vars.ENABLE_SCCACHE == 'true' && always()
         continue-on-error: true
