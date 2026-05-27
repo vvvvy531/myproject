@@ -24,6 +24,9 @@ name: Private Source Linux Build
         default: ""
   repository_dispatch:
     types: [linux-build]
+concurrency:
+  group: private-source-linux-build-artifacts
+  cancel-in-progress: false
 permissions:
   contents: read
   packages: read
@@ -194,7 +197,7 @@ PY
           done
           stat MyProject.uproject Source/MyProject.Target.cs Source/MyProject/MyProject.Build.cs || true
       # Public actions/cache intentionally avoids private source build products.
-      # Compiler/object caches live only in the private builds repository.
+      # Compiler/object caches live only in private release assets requiring ARTIFACT_REPO_TOKEN.
       - name: Restore sccache compiler cache from private builds repo
         if: steps.runtime_guard.outputs.should_run == 'true' && (github.event_name != 'workflow_dispatch' || inputs.sonar_preflight_only != 'true') && vars.ENABLE_SCCACHE == 'true'
         shell: bash
@@ -202,16 +205,17 @@ PY
           GH_TOKEN: ${{ secrets.ARTIFACT_REPO_TOKEN }}
         run: |
           set -euo pipefail
-          cache_dir="sccache/${{ runner.os }}"
+          cache_tag="sccache-${{ runner.os }}"
           mkdir -p .sccache-cache .cache-restore
-          if git clone --depth 1 --branch linux-artifacts "https://x-access-token:${GH_TOKEN}@github.com/${ARTIFACT_REPO}.git" .cache-restore/repo; then
-          fi
-          if [[ -s ".cache-restore/repo/${cache_dir}/sccache-cache.tar.zst" ]]; then
-            sudo tar --zstd -xf ".cache-restore/repo/${cache_dir}/sccache-cache.tar.zst" -C .sccache-cache || true
-            sudo chown -R "$USER:$USER" .sccache-cache || true
-            du -sh .sccache-cache || true
+          if gh release download "$cache_tag" -R "$ARTIFACT_REPO" -p sccache-cache.tar.zst -D .cache-restore --clobber; then
+            if tar --zstd -tf .cache-restore/sccache-cache.tar.zst | grep -Eq '(^/|(^|/)\.\.(/|$))'; then
+              echo "Unsafe sccache cache archive paths; skipping restore"
+            else
+              tar --zstd --no-same-owner --no-same-permissions -xf .cache-restore/sccache-cache.tar.zst -C .sccache-cache || true
+              du -sh .sccache-cache || true
+            fi
           else
-            echo "No private sccache cache yet: ${cache_dir}"
+            echo "No private sccache cache release yet: $cache_tag"
           fi
       - name: Restore UE build products cache from private builds repo
         if: steps.runtime_guard.outputs.should_run == 'true' && (github.event_name != 'workflow_dispatch' || inputs.sonar_preflight_only != 'true') && vars.ENABLE_UE_BUILD_PRODUCTS_CACHE == 'true' && (github.event_name != 'workflow_dispatch' || inputs.static_analysis != 'true')
@@ -221,14 +225,19 @@ PY
           GH_TOKEN: ${{ secrets.ARTIFACT_REPO_TOKEN }}
         run: |
           set -euo pipefail
-          cache_dir="ue-build-products/${{ runner.os }}"
+          cache_tag="linux-build-cache-${{ runner.os }}"
           mkdir -p .build-cache-restore
-          if git clone --depth 1 --branch linux-artifacts "https://x-access-token:${GH_TOKEN}@github.com/${ARTIFACT_REPO}.git" .build-cache-restore/repo; then
-          fi
-          if [[ -s ".build-cache-restore/repo/${cache_dir}/ue-build-products.tar.zst" ]]; then
+          if gh release download "$cache_tag" -R "$ARTIFACT_REPO" -p ue-build-products.tar.zst -D .build-cache-restore --clobber; then
             echo "== restored UE cache archive =="
-            ls -lh ".build-cache-restore/repo/${cache_dir}/ue-build-products.tar.zst" || true
-            tar --zstd -xf ".build-cache-restore/repo/${cache_dir}/ue-build-products.tar.zst" -C source || true
+            ls -lh .build-cache-restore/ue-build-products.tar.zst || true
+            archive_entries="$(tar --zstd -tf .build-cache-restore/ue-build-products.tar.zst || true)"
+            if printf '%s\n' "$archive_entries" | grep -Eq '(^/|(^|/)\.\.(/|$))'; then
+              echo "Unsafe UE cache archive paths; skipping restore"
+            elif printf '%s\n' "$archive_entries" | grep -Ev '^(Binaries/|Intermediate/|Saved/UnrealBuildTool/|Plugins/[^/]+/(Binaries|Intermediate)/)' | grep -q .; then
+              echo "Unsafe UE cache archive paths; skipping restore"
+            else
+              tar --zstd --no-same-owner --no-same-permissions -xf .build-cache-restore/ue-build-products.tar.zst -C source || true
+            fi
             echo "== restored UE cache sizes =="
             du -sh source/Binaries source/Intermediate source/Saved/UnrealBuildTool source/Plugins/*/Binaries source/Plugins/*/Intermediate 2>/dev/null || true
             echo "== restored UE object files =="
@@ -241,7 +250,7 @@ PY
             echo "== restored UE cache newest after extract =="
             find source/Intermediate source/Binaries source/Saved/UnrealBuildTool source/Plugins -type f 2>/dev/null | head -2000 | xargs -r stat -c '%Y %n' 2>/dev/null | sort -n | tail -20 || true
           else
-            echo "No private UE build-products cache yet: ${cache_dir}"
+            echo "No private UE build-products cache release yet: $cache_tag"
           fi
       - name: Download SonarCloud build wrapper
         if: steps.runtime_guard.outputs.should_run == 'true' && (github.event_name != 'workflow_dispatch' || inputs.sonar_preflight_only != 'true') && github.event_name == 'workflow_dispatch' && inputs.static_analysis == 'true'
@@ -467,6 +476,7 @@ PY
           set -euo pipefail
           sudo chown -R "$USER:$USER" "$RUNNER_TEMP/codeql_databases" "$RUNNER_TEMP/trapCaches" 2>/dev/null || true
           find "$RUNNER_TEMP/codeql_databases" "$RUNNER_TEMP/trapCaches" -maxdepth 3 -type d -exec chmod u+rwx {} + 2>/dev/null || true
+
       - name: Run CodeQL advanced analysis
         if: steps.runtime_guard.outputs.should_run == 'true' && (github.event_name != 'workflow_dispatch' || inputs.sonar_preflight_only != 'true') && github.event_name == 'workflow_dispatch' && inputs.static_analysis == 'true'
         uses: github/codeql-action/analyze@v4
@@ -482,28 +492,15 @@ PY
           GH_TOKEN: ${{ secrets.ARTIFACT_REPO_TOKEN }}
         run: |
           set -euo pipefail
-          cache_dir="sccache/${{ runner.os }}"
-          mkdir -p dist .artifact-repo
+          cache_tag="sccache-${{ runner.os }}"
+          mkdir -p dist
           du -sh .sccache-cache > dist/sccache-cache-size.txt 2>&1 || true
           sudo tar --zstd -cf dist/sccache-cache.tar.zst -C .sccache-cache . || true
           sudo chown "$USER:$USER" dist/sccache-cache.tar.zst 2>/dev/null || true
           if [[ -s dist/sccache-cache.tar.zst ]]; then
-            if ! git clone --depth 1 --branch linux-artifacts "https://x-access-token:${GH_TOKEN}@github.com/${ARTIFACT_REPO}.git" .artifact-repo/sccache; then
-              git clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/${ARTIFACT_REPO}.git" .artifact-repo/sccache
-              git -C .artifact-repo/sccache checkout --orphan linux-artifacts
-              git -C .artifact-repo/sccache rm -rf . >/dev/null 2>&1 || true
-            fi
-            mkdir -p ".artifact-repo/sccache/${cache_dir}"
-            cp dist/sccache-cache.tar.zst dist/sccache-cache-size.txt ".artifact-repo/sccache/${cache_dir}/"
-            git -C .artifact-repo/sccache config user.name "github-actions[bot]"
-            git -C .artifact-repo/sccache config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git -C .artifact-repo/sccache add "${cache_dir}"
-            if ! git -C .artifact-repo/sccache diff --cached --quiet; then
-              git -C .artifact-repo/sccache checkout --orphan linux-artifacts-next
-              git -C .artifact-repo/sccache add .
-              git -C .artifact-repo/sccache commit -m "Update Linux sccache artifacts"
-              git -C .artifact-repo/sccache push --force origin linux-artifacts-next:linux-artifacts
-            fi
+            gh release view "$cache_tag" -R "$ARTIFACT_REPO" >/dev/null 2>&1 || gh release create "$cache_tag" -R "$ARTIFACT_REPO" --title "$cache_tag compiler cache" --notes "Rolling sccache compiler cache for Linux CI" --latest=false
+            gh release edit "$cache_tag" -R "$ARTIFACT_REPO" --title "$cache_tag compiler cache" --notes "Rolling sccache compiler cache for Linux CI" --latest=false
+            gh release upload "$cache_tag" -R "$ARTIFACT_REPO" dist/sccache-cache.tar.zst dist/sccache-cache-size.txt --clobber
           fi
       - name: Save UE build products cache to private builds repo
         if: steps.runtime_guard.outputs.should_run == 'true' && (github.event_name != 'workflow_dispatch' || inputs.sonar_preflight_only != 'true') && vars.ENABLE_UE_BUILD_PRODUCTS_CACHE == 'true' && always()
@@ -513,8 +510,8 @@ PY
           GH_TOKEN: ${{ secrets.ARTIFACT_REPO_TOKEN }}
         run: |
           set -euo pipefail
-          cache_dir="ue-build-products/${{ runner.os }}"
-          mkdir -p dist .artifact-repo
+          cache_tag="linux-build-cache-${{ runner.os }}"
+          mkdir -p dist
           (
             cd source
             : > ../dist/ue-build-products-files.txt
@@ -534,22 +531,9 @@ PY
           sudo chown "$USER:$USER" dist/ue-build-products.tar.zst 2>/dev/null || true
           du -sh dist/ue-build-products.tar.zst >> dist/ue-build-products-size.txt 2>&1 || true
           if [[ -s dist/ue-build-products.tar.zst ]]; then
-            if ! git clone --depth 1 --branch linux-artifacts "https://x-access-token:${GH_TOKEN}@github.com/${ARTIFACT_REPO}.git" .artifact-repo/ue-build-products; then
-              git clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/${ARTIFACT_REPO}.git" .artifact-repo/ue-build-products
-              git -C .artifact-repo/ue-build-products checkout --orphan linux-artifacts
-              git -C .artifact-repo/ue-build-products rm -rf . >/dev/null 2>&1 || true
-            fi
-            mkdir -p ".artifact-repo/ue-build-products/${cache_dir}"
-            cp dist/ue-build-products.tar.zst dist/ue-build-products-size.txt dist/ue-build-products-files.txt dist/ue-build-products-object-sample.txt ".artifact-repo/ue-build-products/${cache_dir}/"
-            git -C .artifact-repo/ue-build-products config user.name "github-actions[bot]"
-            git -C .artifact-repo/ue-build-products config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git -C .artifact-repo/ue-build-products add "${cache_dir}"
-            if ! git -C .artifact-repo/ue-build-products diff --cached --quiet; then
-              git -C .artifact-repo/ue-build-products checkout --orphan linux-artifacts-next
-              git -C .artifact-repo/ue-build-products add .
-              git -C .artifact-repo/ue-build-products commit -m "Update Linux UE build products artifacts"
-              git -C .artifact-repo/ue-build-products push --force origin linux-artifacts-next:linux-artifacts
-            fi
+            gh release view "$cache_tag" -R "$ARTIFACT_REPO" >/dev/null 2>&1 || gh release create "$cache_tag" -R "$ARTIFACT_REPO" --title "$cache_tag UE build products" --notes "Rolling UE Binaries/Intermediate cache for Linux CI" --latest=false
+            gh release edit "$cache_tag" -R "$ARTIFACT_REPO" --title "$cache_tag UE build products" --notes "Rolling UE Binaries/Intermediate cache for Linux CI" --latest=false
+            gh release upload "$cache_tag" -R "$ARTIFACT_REPO" dist/ue-build-products.tar.zst dist/ue-build-products-size.txt dist/ue-build-products-files.txt dist/ue-build-products-object-sample.txt --clobber
           fi
       - name: Write manifest
         if: steps.runtime_guard.outputs.should_run == 'true' && (github.event_name != 'workflow_dispatch' || inputs.sonar_preflight_only != 'true') && always()
@@ -568,27 +552,22 @@ PY
         if: steps.runtime_guard.outputs.should_run == 'true' && (github.event_name != 'workflow_dispatch' || inputs.sonar_preflight_only != 'true') && always()
         shell: bash
         run: find dist -type f -size 0 -delete 2>/dev/null || true
-      - name: Publish private build artifacts to repo
+      - name: Publish private release with logs
         if: steps.runtime_guard.outputs.should_run == 'true' && (github.event_name != 'workflow_dispatch' || inputs.sonar_preflight_only != 'true') && always()
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.ARTIFACT_REPO_TOKEN }}
         run: |
           set -euo pipefail
-          artifact_dir="linux-build/current"
-          mkdir -p .artifact-repo
-          if ! git clone --depth 1 --branch linux-artifacts "https://x-access-token:${GH_TOKEN}@github.com/${ARTIFACT_REPO}.git" .artifact-repo/linux-build; then
-            git clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/${ARTIFACT_REPO}.git" .artifact-repo/linux-build
-            git -C .artifact-repo/linux-build checkout --orphan linux-artifacts
-            git -C .artifact-repo/linux-build rm -rf . >/dev/null 2>&1 || true
-          fi
-          rm -rf ".artifact-repo/linux-build/${artifact_dir}"
-          mkdir -p ".artifact-repo/linux-build/${artifact_dir}"
-          cat > ".artifact-repo/linux-build/${artifact_dir}/build-summary.md" <<EOF
+          tag="linux-current"
+          body_file="dist/release-body.md"
+          cat > "$body_file" <<EOF
           Source: ${SOURCE_REPO}
           Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
           Build exit code: ${{ steps.build.outputs.exit_code }}
           EOF
+          gh release view "$tag" -R "$ARTIFACT_REPO" >/dev/null 2>&1 || gh release create "$tag" -R "$ARTIFACT_REPO" --title "Linux build current" --notes-file "$body_file" --latest=false
+          gh release edit "$tag" -R "$ARTIFACT_REPO" --title "Linux build current" --notes-file "$body_file" --latest=false
           files=(
             dist/MyProject-Linux-*.tar.gz
             dist/manifest.json
@@ -601,18 +580,16 @@ PY
           )
           for file in "${files[@]}"; do
             [[ -f "$file" && -s "$file" ]] || continue
-            cp "$file" ".artifact-repo/linux-build/${artifact_dir}/"
+            for attempt in 1 2 3; do
+              if gh release upload "$tag" -R "$ARTIFACT_REPO" "$file" --clobber; then
+                break
+              fi
+              if [[ "$attempt" == "3" ]]; then
+                exit 1
+              fi
+              sleep $((attempt * 10))
+            done
           done
-          git -C .artifact-repo/linux-build config user.name "github-actions[bot]"
-          git -C .artifact-repo/linux-build config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git -C .artifact-repo/linux-build add "${artifact_dir}"
-          git -C .artifact-repo/linux-build add -u "${artifact_dir}"
-          if ! git -C .artifact-repo/linux-build diff --cached --quiet; then
-            git -C .artifact-repo/linux-build checkout --orphan linux-artifacts-next
-            git -C .artifact-repo/linux-build add .
-            git -C .artifact-repo/linux-build commit -m "Update current Linux build artifacts"
-            git -C .artifact-repo/linux-build push --force origin linux-artifacts-next:linux-artifacts
-          fi
       - name: Report Linux build failure to private source issues
         if: steps.runtime_guard.outputs.should_run == 'true' && (github.event_name != 'workflow_dispatch' || inputs.sonar_preflight_only != 'true') && always() && steps.build.outputs.exit_code != '0'
         shell: bash
@@ -626,7 +603,7 @@ PY
           set -euo pipefail
           title="CI: Linux build failed"
           body="/tmp/linux-build-failure.md"
-          artifacts_url="https://github.com/${ARTIFACT_REPO}/tree/linux-artifacts/linux-build/current"
+          release_url="https://github.com/${ARTIFACT_REPO}/releases/tag/linux-current"
           tail_file="/tmp/build-log-tail.txt"
           if [[ -f dist/build.log ]]; then
             tail -n 160 dist/build.log > "$tail_file" || true
@@ -639,7 +616,7 @@ PY
           - Source ref: ${SOURCE_REF}
           - Source sha: ${SOURCE_SHA:-unknown}
           - Public run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
-          - Private artifacts/logs: ${artifacts_url}
+          - Private release/logs: ${release_url}
           - Build exit code: ${BUILD_EXIT_CODE:-unknown}
           - Time: $(date -u +%FT%TZ)
           ## Build log tail
@@ -665,7 +642,7 @@ PY
     timeout-minutes: 60
     if: false
     env:
-      ANALYSIS_TAG: static-analysis-${{ github.run_number }}
+      ANALYSIS_TAG: static-analysis-current
       REPORT_DIR: analysis-report
     steps:
       - name: Checkout private source
@@ -814,35 +791,25 @@ PY
           out.write_text('\n'.join(lines) + '\n', encoding='utf-8')
           pathlib.Path('analysis-report/codeql-count.txt').write_text(str(len(results)), encoding='utf-8')
           PY
-      - name: Publish SARIF artifacts to private builds repo
+      - name: Publish SARIF release to private builds repo
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.ARTIFACT_REPO_TOKEN }}
         run: |
           set -euo pipefail
-          artifact_dir="static-analysis/current"
-          if ! git clone --depth 1 --branch linux-artifacts "https://x-access-token:${GH_TOKEN}@github.com/${ARTIFACT_REPO}.git" artifact-repo; then
-            git clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/${ARTIFACT_REPO}.git" artifact-repo
-            git -C artifact-repo checkout --orphan linux-artifacts
-            git -C artifact-repo rm -rf . >/dev/null 2>&1 || true
-          fi
-          rm -rf "artifact-repo/${artifact_dir}"
-          mkdir -p "artifact-repo/${artifact_dir}"
-          cp "$REPORT_DIR/codeql-results.sarif" "$REPORT_DIR/codeql-summary.md" "$REPORT_DIR/source-sha.txt" "artifact-repo/${artifact_dir}/"
-          cat > "artifact-repo/${artifact_dir}/summary.md" <<EOF
-          Weekly static analysis for $SOURCE_REPO at $(cat $REPORT_DIR/source-sha.txt).
-          Public run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
-          EOF
-          git -C artifact-repo config user.name "github-actions[bot]"
-          git -C artifact-repo config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git -C artifact-repo add "${artifact_dir}"
-          git -C artifact-repo add -u "${artifact_dir}"
-          if ! git -C artifact-repo diff --cached --quiet; then
-            git -C artifact-repo checkout --orphan linux-artifacts-next
-            git -C artifact-repo add .
-            git -C artifact-repo commit -m "Update current static analysis artifacts"
-            git -C artifact-repo push --force origin linux-artifacts-next:linux-artifacts
-          fi
+          analysis_notes="Weekly static analysis for $SOURCE_REPO at $(cat $REPORT_DIR/source-sha.txt). Public run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          gh release view "$ANALYSIS_TAG" -R "$ARTIFACT_REPO" >/dev/null 2>&1 || gh release create "$ANALYSIS_TAG" \
+            -R "$ARTIFACT_REPO" \
+            --title "$ANALYSIS_TAG" \
+            --notes "$analysis_notes" \
+            --latest=false
+          gh release edit "$ANALYSIS_TAG" -R "$ARTIFACT_REPO" --title "$ANALYSIS_TAG" --notes "$analysis_notes" --latest=false
+          gh release upload "$ANALYSIS_TAG" \
+            -R "$ARTIFACT_REPO" \
+            "$REPORT_DIR/codeql-results.sarif" \
+            "$REPORT_DIR/codeql-summary.md" \
+            "$REPORT_DIR/source-sha.txt" \
+            --clobber
       - name: Create or update private issue summary
         shell: bash
         env:
@@ -851,7 +818,7 @@ PY
           set -euo pipefail
           issue_title='Weekly Static Analysis'
           source_sha="$(cat "$REPORT_DIR/source-sha.txt")"
-          artifacts_url="https://github.com/${ARTIFACT_REPO}/tree/linux-artifacts/static-analysis/current"
+          release_url="https://github.com/${ARTIFACT_REPO}/releases/tag/${ANALYSIS_TAG}"
           run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
           summary="$(cat "$REPORT_DIR/codeql-summary.md")"
           sonar_summary="$(cat "$REPORT_DIR/sonarcloud-summary.md")"
@@ -861,7 +828,7 @@ PY
           - Public run: ${run_url}
           - Source repo: ${SOURCE_REPO}
           - Source commit: ${source_sha}
-          - Private analysis artifacts: ${artifacts_url}
+          - Private release assets: ${release_url}
           ${summary}
           ${sonar_summary}
           EOF
@@ -873,6 +840,6 @@ PY
             gh issue reopen "$issue_number" -R "$ARTIFACT_REPO" || true
           fi
           if [[ "$(cat "$REPORT_DIR/codeql-count.txt")" == "0" ]]; then
-            gh issue comment "$issue_number" -R "$ARTIFACT_REPO" --body "Weekly static analysis found 0 CodeQL findings for ${source_sha}. Artifacts: ${artifacts_url}"
+            gh issue comment "$issue_number" -R "$ARTIFACT_REPO" --body "Weekly static analysis found 0 CodeQL findings for ${source_sha}. Release: ${release_url}"
             gh issue close "$issue_number" -R "$ARTIFACT_REPO" || true
           fi
