@@ -192,6 +192,7 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.event_name == 'pull_request' && github.token || secrets.PRIVATE_SOURCE_PAT }}
+          GITHUB_TOKEN: ${{ github.event_name == 'pull_request' && github.token || secrets.PRIVATE_SOURCE_PAT }}
           PR_BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || '' }}
         run: |
           set +x
@@ -199,9 +200,15 @@ jobs:
           if [[ -z "${PR_BASE_SHA:-}" ]]; then
             PR_BASE_SHA="$(gh pr view "$PR_NUMBER" --repo "$SOURCE_REPO" --json baseRefOid --jq .baseRefOid)"
           fi
+          coderabbit --version || true
+          coderabbit auth status || true
+          git status --short || true
+          git rev-parse HEAD || true
+          git cat-file -e "$PR_BASE_SHA^{commit}" || git fetch origin "$PR_BASE_SHA"
           coderabbit review --agent --base-commit "$PR_BASE_SHA" > coderabbit-pr-review.jsonl 2> coderabbit-pr-review.stderr
           status=$?
           tail -n 120 coderabbit-pr-review.stderr || true
+          tail -n 120 coderabbit-pr-review.jsonl || true
           echo "status=$status" >> "$GITHUB_OUTPUT"
           exit "$status"
 
