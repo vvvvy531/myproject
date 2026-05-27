@@ -18,6 +18,9 @@ name: Private Source Linux Build
         default: ""
   repository_dispatch:
     types: [linux-build]
+concurrency:
+  group: private-source-linux-build-artifacts
+  cancel-in-progress: false
 permissions:
   contents: read
   packages: read
