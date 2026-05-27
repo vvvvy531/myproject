@@ -393,7 +393,8 @@ jobs:
         with:
           projectBaseDir: source
           args: >
-            -Dsonar.projectKey=${{ vars.SONAR_PROJECT_KEY }}
+            -Dsonar.projectKey=${{ vars.SONAR_PROJECT_KEY }}_ci_validation
+            -Dsonar.projectName=${{ vars.SONAR_PROJECT_KEY }} CI Validation
             -Dsonar.organization=${{ vars.SONAR_ORGANIZATION }}
             -Dsonar.sources=.
             -Dsonar.cfamily.compile-commands=.sonar/bw-output/compile_commands.json
