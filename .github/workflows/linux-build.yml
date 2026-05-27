@@ -388,9 +388,22 @@ jobs:
           test -s source/.sonar/bw-output/build-wrapper-dump.json
           test -s source/.sonar/bw-output/compile_commands.json
           ls -lh source/.sonar/bw-output
+      - name: Prepare SonarCloud validation project
+        if: steps.runtime_guard.outputs.should_run == 'true' && github.event_name == 'workflow_dispatch' && inputs.static_analysis == 'true' && steps.sonar.outputs.enabled == 'true'
+        shell: bash
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_PROJECT_KEY: ${{ vars.SONAR_PROJECT_KEY }}_ci_validation
+          SONAR_ORGANIZATION: ${{ vars.SONAR_ORGANIZATION }}
+        run: |
+          set -euo pipefail
+          auth=(-u "${SONAR_TOKEN}:")
+          curl -fsS "${auth[@]}" -X POST "https://sonarcloud.io/api/projects/create"             --data-urlencode "organization=${SONAR_ORGANIZATION}"             --data-urlencode "project=${SONAR_PROJECT_KEY}"             --data-urlencode "name=${SONAR_PROJECT_KEY}" >/tmp/sonar-create.json || true
+          curl -fsS "${auth[@]}" -X POST "https://sonarcloud.io/api/qualityprofiles/add_project"             --data-urlencode "project=${SONAR_PROJECT_KEY}"             --data-urlencode "language=cpp"             --data-urlencode "qualityProfile=Sonar way" >/tmp/sonar-profile-cpp.json || true
+          curl -fsS "${auth[@]}" "https://sonarcloud.io/api/qualityprofiles/search?organization=${SONAR_ORGANIZATION}&project=${SONAR_PROJECT_KEY}" | python3 -m json.tool | head -120 || true
+
       - name: Run SonarCloud advanced analysis
         if: steps.runtime_guard.outputs.should_run == 'true' && github.event_name == 'workflow_dispatch' && inputs.static_analysis == 'true' && steps.sonar.outputs.enabled == 'true'
-        continue-on-error: true
         uses: SonarSource/sonarqube-scan-action@v8
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
