@@ -545,7 +545,7 @@ jobs:
           set -euo pipefail
           title="CI: Linux build failed"
           body="/tmp/linux-build-failure.md"
-          release_url="https://github.com/${ARTIFACT_REPO}/releases/tag/linux-${GITHUB_RUN_NUMBER}"
+          release_url="https://github.com/${ARTIFACT_REPO}/releases/tag/linux-current"
           tail_file="/tmp/build-log-tail.txt"
           if [[ -f dist/build.log ]]; then
             tail -n 160 dist/build.log > "$tail_file" || true
