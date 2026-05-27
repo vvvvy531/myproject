@@ -182,8 +182,9 @@ jobs:
           coderabbit --version || true
           git status --short || true
           git rev-parse HEAD || true
-          git fetch origin "$PR_BASE_REF:$PR_BASE_REF"
-          git cat-file -e "$PR_BASE_SHA^{commit}" || git fetch origin "$PR_BASE_SHA"
+          auth_header="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w 0)"
+          git -c http.https://github.com/.extraheader="$auth_header" fetch origin "$PR_BASE_REF:$PR_BASE_REF"
+          git cat-file -e "$PR_BASE_SHA^{commit}" || git -c http.https://github.com/.extraheader="$auth_header" fetch origin "$PR_BASE_SHA"
           coderabbit review --agent --base "$PR_BASE_REF" --base-commit "$PR_BASE_SHA" > coderabbit-pr-review.jsonl 2> coderabbit-pr-review.stderr
           status=$?
           tail -n 120 coderabbit-pr-review.stderr || true
@@ -293,3 +294,6 @@ jobs:
           rm -rf source "$HOME/.coderabbit"
           rm -f ~/.git-credentials
           git config --global --unset-all credential.helper || true
+
+
+
