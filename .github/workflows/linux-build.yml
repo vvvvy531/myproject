@@ -167,8 +167,7 @@ jobs:
             if tar --zstd -tf .cache-restore/sccache-cache.tar.zst | grep -Eq '(^/|(^|/)\.\.(/|$))'; then
               echo "Unsafe sccache cache archive paths; skipping restore"
             else
-              sudo tar --zstd --no-same-owner -xf .cache-restore/sccache-cache.tar.zst -C .sccache-cache || true
-              sudo chown -R "$USER:$USER" .sccache-cache || true
+              tar --zstd --no-same-owner --no-same-permissions -xf .cache-restore/sccache-cache.tar.zst -C .sccache-cache || true
               du -sh .sccache-cache || true
             fi
           else
@@ -187,10 +186,13 @@ jobs:
           if gh release download "$cache_tag" -R "$ARTIFACT_REPO" -p ue-build-products.tar.zst -D .build-cache-restore --clobber; then
             echo "== restored UE cache archive =="
             ls -lh .build-cache-restore/ue-build-products.tar.zst || true
-            if tar --zstd -tf .build-cache-restore/ue-build-products.tar.zst | grep -Ev '^(Binaries/|Intermediate/|Saved/UnrealBuildTool/|Plugins/[^/]+/(Binaries|Intermediate)/)' | grep -q .; then
+            archive_entries="$(tar --zstd -tf .build-cache-restore/ue-build-products.tar.zst || true)"
+            if printf '%s\n' "$archive_entries" | grep -Eq '(^/|(^|/)\.\.(/|$))'; then
+              echo "Unsafe UE cache archive paths; skipping restore"
+            elif printf '%s\n' "$archive_entries" | grep -Ev '^(Binaries/|Intermediate/|Saved/UnrealBuildTool/|Plugins/[^/]+/(Binaries|Intermediate)/)' | grep -q .; then
               echo "Unsafe UE cache archive paths; skipping restore"
             else
-              tar --zstd --no-same-owner -xf .build-cache-restore/ue-build-products.tar.zst -C source || true
+              tar --zstd --no-same-owner --no-same-permissions -xf .build-cache-restore/ue-build-products.tar.zst -C source || true
             fi
             echo "== restored UE cache sizes =="
             du -sh source/Binaries source/Intermediate source/Saved/UnrealBuildTool source/Plugins/*/Binaries source/Plugins/*/Intermediate 2>/dev/null || true
