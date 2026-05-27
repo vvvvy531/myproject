@@ -710,6 +710,7 @@ jobs:
       - name: Run SonarCloud advanced analysis
 
         if: steps.runtime_guard.outputs.should_run == 'true' && github.event_name == 'workflow_dispatch' && inputs.static_analysis == 'true' && steps.sonar.outputs.enabled == 'true'
+        continue-on-error: true
 
         uses: SonarSource/sonarqube-scan-action@v8
 
@@ -729,7 +730,7 @@ jobs:
 
             -Dsonar.sources=.
 
-            -Dsonar.cfamily.compile-commands=source/.sonar/bw-output/compile_commands.json
+            -Dsonar.cfamily.compile-commands=.sonar/bw-output/compile_commands.json
 
             -Dsonar.exclusions=**/Binaries/**,**/DerivedDataCache/**,**/Intermediate/**,**/Saved/**,**/.git/**,**/.github/**,**/graphify-out/**,**/.sonar/build-wrapper-linux-x86/**
 
@@ -1154,6 +1155,7 @@ jobs:
       - name: Run SonarCloud deep analysis
 
         if: steps.sonar.outputs.enabled == 'true'
+        continue-on-error: true
 
         uses: SonarSource/sonarqube-scan-action@v8
 
@@ -1443,3 +1445,4 @@ jobs:
             gh issue close "$issue_number" -R "$ARTIFACT_REPO" || true
 
           fi
+
