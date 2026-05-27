@@ -8,6 +8,12 @@ name: Private Source Linux Build
         default: "false"
         type: choice
         options: ["false", "true"]
+      sonar_preflight_only:
+        description: Run only SonarCloud API preflight diagnostics
+        required: false
+        default: "false"
+        type: choice
+        options: ["false", "true"]
       source_ref:
         description: Private source ref to build
         required: false
@@ -89,7 +95,7 @@ jobs:
             gh issue comment "$issue" -R "$SOURCE_REPO" --body-file "$body" >/dev/null
           fi
       - name: Free hosted runner disk
-        if: steps.runtime_guard.outputs.should_run == 'true'
+        if: steps.runtime_guard.outputs.should_run == 'true' && (github.event_name != 'workflow_dispatch' || inputs.sonar_preflight_only != 'true')
         shell: bash
         run: |
           set -euo pipefail
@@ -98,20 +104,20 @@ jobs:
           sudo timeout 120s docker system prune -af || true
           df -h
       - name: Login to GHCR
-        if: steps.runtime_guard.outputs.should_run == 'true'
+        if: steps.runtime_guard.outputs.should_run == 'true' && (github.event_name != 'workflow_dispatch' || inputs.sonar_preflight_only != 'true')
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ secrets.GHCR_USERNAME }}
           password: ${{ secrets.GHCR_TOKEN }}
       - name: Start UE image pull in background
-        if: steps.runtime_guard.outputs.should_run == 'true'
+        if: steps.runtime_guard.outputs.should_run == 'true' && (github.event_name != 'workflow_dispatch' || inputs.sonar_preflight_only != 'true')
         shell: bash
         run: |
           set -euo pipefail
           nohup bash -lc 'docker pull "$UE_IMAGE" > /tmp/ue-image-pull.log 2>&1' & echo $! > /tmp/ue-image-pull.pid
       - name: Checkout private source
-        if: steps.runtime_guard.outputs.should_run == 'true'
+        if: steps.runtime_guard.outputs.should_run == 'true' && (github.event_name != 'workflow_dispatch' || inputs.sonar_preflight_only != 'true')
         uses: actions/checkout@v4
         with:
           repository: ${{ env.SOURCE_REPO }}
@@ -121,7 +127,7 @@ jobs:
           lfs: false
           submodules: recursive
       - name: Record checked out source revision
-        if: steps.runtime_guard.outputs.should_run == 'true'
+        if: steps.runtime_guard.outputs.should_run == 'true' && (github.event_name != 'workflow_dispatch' || inputs.sonar_preflight_only != 'true')
         shell: bash
         run: |
           set -euo pipefail
@@ -132,11 +138,11 @@ jobs:
             echo "Warning: checked out source HEAD does not match requested source sha" >&2
           fi
       - name: Prepare output directory
-        if: steps.runtime_guard.outputs.should_run == 'true'
+        if: steps.runtime_guard.outputs.should_run == 'true' && (github.event_name != 'workflow_dispatch' || inputs.sonar_preflight_only != 'true')
         shell: bash
         run: mkdir -p dist .sccache-cache .build-cache-restore .build-cache-restore
       - name: Normalize private source file mtimes for UBT incremental cache
-        if: steps.runtime_guard.outputs.should_run == 'true'
+        if: steps.runtime_guard.outputs.should_run == 'true' && (github.event_name != 'workflow_dispatch' || inputs.sonar_preflight_only != 'true')
         shell: bash
         working-directory: source
         run: |
@@ -152,7 +158,7 @@ jobs:
       # Public actions/cache intentionally avoids private source build products.
       # Compiler/object caches live only in the private builds repository.
       - name: Restore sccache compiler cache from private builds repo
-        if: steps.runtime_guard.outputs.should_run == 'true' && vars.ENABLE_SCCACHE == 'true'
+        if: steps.runtime_guard.outputs.should_run == 'true' && (github.event_name != 'workflow_dispatch' || inputs.sonar_preflight_only != 'true') && vars.ENABLE_SCCACHE == 'true'
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.ARTIFACT_REPO_TOKEN }}
@@ -170,7 +176,7 @@ jobs:
             echo "No private sccache cache yet: ${cache_dir}"
           fi
       - name: Restore UE build products cache from private builds repo
-        if: steps.runtime_guard.outputs.should_run == 'true' && vars.ENABLE_UE_BUILD_PRODUCTS_CACHE == 'true' && (github.event_name != 'workflow_dispatch' || inputs.static_analysis != 'true')
+        if: steps.runtime_guard.outputs.should_run == 'true' && (github.event_name != 'workflow_dispatch' || inputs.sonar_preflight_only != 'true') && vars.ENABLE_UE_BUILD_PRODUCTS_CACHE == 'true' && (github.event_name != 'workflow_dispatch' || inputs.static_analysis != 'true')
         shell: bash
         continue-on-error: true
         env:
@@ -200,7 +206,7 @@ jobs:
             echo "No private UE build-products cache yet: ${cache_dir}"
           fi
       - name: Download SonarCloud build wrapper
-        if: steps.runtime_guard.outputs.should_run == 'true' && github.event_name == 'workflow_dispatch' && inputs.static_analysis == 'true'
+        if: steps.runtime_guard.outputs.should_run == 'true' && (github.event_name != 'workflow_dispatch' || inputs.sonar_preflight_only != 'true') && github.event_name == 'workflow_dispatch' && inputs.static_analysis == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -208,7 +214,7 @@ jobs:
           curl -fsSL https://sonarcloud.io/static/cpp/build-wrapper-linux-x86.zip -o /tmp/build-wrapper-linux-x86.zip
           unzip -q -o /tmp/build-wrapper-linux-x86.zip -d source/.sonar
       - name: Initialize CodeQL for advanced review
-        if: steps.runtime_guard.outputs.should_run == 'true' && github.event_name == 'workflow_dispatch' && inputs.static_analysis == 'true'
+        if: steps.runtime_guard.outputs.should_run == 'true' && (github.event_name != 'workflow_dispatch' || inputs.sonar_preflight_only != 'true') && github.event_name == 'workflow_dispatch' && inputs.static_analysis == 'true'
         uses: github/codeql-action/init@v4
         with:
           languages: cpp
@@ -216,7 +222,7 @@ jobs:
           build-mode: manual
           queries: security-and-quality
       - name: Build Linux target in official UE container
-        if: steps.runtime_guard.outputs.should_run == 'true'
+        if: steps.runtime_guard.outputs.should_run == 'true' && (github.event_name != 'workflow_dispatch' || inputs.sonar_preflight_only != 'true')
         id: build
         shell: bash
         continue-on-error: true
@@ -365,7 +371,7 @@ jobs:
           fi
           echo "exit_code=$code" >> "$GITHUB_OUTPUT"
       - name: Check SonarCloud configuration
-        if: steps.runtime_guard.outputs.should_run == 'true' && github.event_name == 'workflow_dispatch' && inputs.static_analysis == 'true'
+        if: steps.runtime_guard.outputs.should_run == 'true' && (github.event_name != 'workflow_dispatch' || inputs.sonar_preflight_only != 'true') && github.event_name == 'workflow_dispatch' && inputs.static_analysis == 'true'
         id: sonar
         shell: bash
         env:
@@ -381,7 +387,7 @@ jobs:
             echo "SonarCloud scan skipped: configure SONAR_TOKEN secret plus SONAR_PROJECT_KEY and SONAR_ORGANIZATION variables."
           fi
       - name: Verify SonarCloud build-wrapper output
-        if: steps.runtime_guard.outputs.should_run == 'true' && github.event_name == 'workflow_dispatch' && inputs.static_analysis == 'true' && steps.sonar.outputs.enabled == 'true'
+        if: steps.runtime_guard.outputs.should_run == 'true' && (github.event_name != 'workflow_dispatch' || inputs.sonar_preflight_only != 'true') && github.event_name == 'workflow_dispatch' && inputs.static_analysis == 'true' && steps.sonar.outputs.enabled == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -389,7 +395,7 @@ jobs:
           test -s source/.sonar/bw-output/compile_commands.json
           ls -lh source/.sonar/bw-output
       - name: Prepare SonarCloud validation project
-        if: steps.runtime_guard.outputs.should_run == 'true' && github.event_name == 'workflow_dispatch' && inputs.static_analysis == 'true' && steps.sonar.outputs.enabled == 'true'
+        if: steps.runtime_guard.outputs.should_run == 'true' && (github.event_name != 'workflow_dispatch' || inputs.sonar_preflight_only != 'true') && github.event_name == 'workflow_dispatch' && inputs.static_analysis == 'true' && steps.sonar.outputs.enabled == 'true'
         shell: bash
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
@@ -403,7 +409,7 @@ jobs:
           curl -fsS "${auth[@]}" "https://sonarcloud.io/api/qualityprofiles/search?organization=${SONAR_ORGANIZATION}&project=${SONAR_PROJECT_KEY}" | python3 -m json.tool | head -120 || true
 
       - name: Run SonarCloud advanced analysis
-        if: steps.runtime_guard.outputs.should_run == 'true' && github.event_name == 'workflow_dispatch' && inputs.static_analysis == 'true' && steps.sonar.outputs.enabled == 'true'
+        if: steps.runtime_guard.outputs.should_run == 'true' && (github.event_name != 'workflow_dispatch' || inputs.sonar_preflight_only != 'true') && github.event_name == 'workflow_dispatch' && inputs.static_analysis == 'true' && steps.sonar.outputs.enabled == 'true'
         uses: SonarSource/sonarqube-scan-action@v8
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
@@ -417,21 +423,21 @@ jobs:
             -Dsonar.cfamily.compile-commands=.sonar/bw-output/compile_commands.json
             -Dsonar.exclusions=**/Binaries/**,**/DerivedDataCache/**,**/Intermediate/**,**/Saved/**,**/.git/**,**/.github/**,**/graphify-out/**,**/.sonar/build-wrapper-linux-x86/**
       - name: Fix CodeQL database permissions after container build
-        if: steps.runtime_guard.outputs.should_run == 'true' && github.event_name == 'workflow_dispatch' && inputs.static_analysis == 'true'
+        if: steps.runtime_guard.outputs.should_run == 'true' && (github.event_name != 'workflow_dispatch' || inputs.sonar_preflight_only != 'true') && github.event_name == 'workflow_dispatch' && inputs.static_analysis == 'true'
         shell: bash
         run: |
           set -euo pipefail
           sudo chown -R "$USER:$USER" "$RUNNER_TEMP/codeql_databases" "$RUNNER_TEMP/trapCaches" 2>/dev/null || true
           find "$RUNNER_TEMP/codeql_databases" "$RUNNER_TEMP/trapCaches" -maxdepth 3 -type d -exec chmod u+rwx {} + 2>/dev/null || true
       - name: Run CodeQL advanced analysis
-        if: steps.runtime_guard.outputs.should_run == 'true' && github.event_name == 'workflow_dispatch' && inputs.static_analysis == 'true'
+        if: steps.runtime_guard.outputs.should_run == 'true' && (github.event_name != 'workflow_dispatch' || inputs.sonar_preflight_only != 'true') && github.event_name == 'workflow_dispatch' && inputs.static_analysis == 'true'
         uses: github/codeql-action/analyze@v4
         with:
           upload: false
           output: dist/codeql-sarif
           category: private-source-advanced
       - name: Save sccache compiler cache to private builds repo
-        if: steps.runtime_guard.outputs.should_run == 'true' && vars.ENABLE_SCCACHE == 'true' && always()
+        if: steps.runtime_guard.outputs.should_run == 'true' && (github.event_name != 'workflow_dispatch' || inputs.sonar_preflight_only != 'true') && vars.ENABLE_SCCACHE == 'true' && always()
         continue-on-error: true
         shell: bash
         env:
@@ -462,7 +468,7 @@ jobs:
             fi
           fi
       - name: Save UE build products cache to private builds repo
-        if: steps.runtime_guard.outputs.should_run == 'true' && vars.ENABLE_UE_BUILD_PRODUCTS_CACHE == 'true' && always()
+        if: steps.runtime_guard.outputs.should_run == 'true' && (github.event_name != 'workflow_dispatch' || inputs.sonar_preflight_only != 'true') && vars.ENABLE_UE_BUILD_PRODUCTS_CACHE == 'true' && always()
         continue-on-error: true
         shell: bash
         env:
@@ -508,7 +514,7 @@ jobs:
             fi
           fi
       - name: Write manifest
-        if: steps.runtime_guard.outputs.should_run == 'true' && always()
+        if: steps.runtime_guard.outputs.should_run == 'true' && (github.event_name != 'workflow_dispatch' || inputs.sonar_preflight_only != 'true') && always()
         shell: bash
         run: |
           set -euo pipefail
@@ -521,11 +527,11 @@ jobs:
           printf "%s\n" "$build_exit_code" > dist/build-exit-code.txt
           BUILD_EXIT_CODE="$build_exit_code" python3 -c 'import json, os; json.dump({"sourceRepo": os.environ["SOURCE_REPO"], "sourceRef": os.environ.get("SOURCE_REF", ""), "sourceSha": os.environ.get("SOURCE_SHA", ""), "runId": os.environ["GITHUB_RUN_ID"], "runNumber": os.environ["GITHUB_RUN_NUMBER"], "target": os.environ["TARGET_NAME"], "platform": "Linux", "configuration": "Development", "buildExitCode": os.environ["BUILD_EXIT_CODE"]}, open("dist/manifest.json", "w", encoding="utf-8"), indent=2)'
       - name: Drop empty artifacts
-        if: steps.runtime_guard.outputs.should_run == 'true' && always()
+        if: steps.runtime_guard.outputs.should_run == 'true' && (github.event_name != 'workflow_dispatch' || inputs.sonar_preflight_only != 'true') && always()
         shell: bash
         run: find dist -type f -size 0 -delete 2>/dev/null || true
       - name: Publish private build artifacts to repo
-        if: steps.runtime_guard.outputs.should_run == 'true' && always()
+        if: steps.runtime_guard.outputs.should_run == 'true' && (github.event_name != 'workflow_dispatch' || inputs.sonar_preflight_only != 'true') && always()
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.ARTIFACT_REPO_TOKEN }}
@@ -570,7 +576,7 @@ jobs:
             git -C .artifact-repo/linux-build push --force origin linux-artifacts-next:linux-artifacts
           fi
       - name: Report Linux build failure to private source issues
-        if: steps.runtime_guard.outputs.should_run == 'true' && always() && steps.build.outputs.exit_code != '0'
+        if: steps.runtime_guard.outputs.should_run == 'true' && (github.event_name != 'workflow_dispatch' || inputs.sonar_preflight_only != 'true') && always() && steps.build.outputs.exit_code != '0'
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.SOURCE_REPO_TOKEN }}
@@ -611,7 +617,7 @@ jobs:
             gh issue reopen "$issue" -R "$SOURCE_REPO" >/dev/null 2>&1 || true
           fi
       - name: Fail job if build failed
-        if: steps.runtime_guard.outputs.should_run == 'true' && steps.build.outputs.exit_code != '0'
+        if: steps.runtime_guard.outputs.should_run == 'true' && (github.event_name != 'workflow_dispatch' || inputs.sonar_preflight_only != 'true') && steps.build.outputs.exit_code != '0'
         shell: bash
         run: exit 1
   static-analysis:
