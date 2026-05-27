@@ -409,6 +409,7 @@ jobs:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         with:
           projectBaseDir: source
+          scannerVersion: 7.3.0.5189
           args: >
             -Dsonar.projectKey=${{ vars.SONAR_PROJECT_KEY }}_ci_validation
             -Dsonar.organization=${{ vars.SONAR_ORGANIZATION }}
