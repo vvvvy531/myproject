@@ -99,7 +99,7 @@ jobs:
           sonar_login=$(python3 -c "import json; from pathlib import Path; data=json.loads(Path('/tmp/sonar-body.json').read_text()); print(data.get('login') or data.get('externalLogin') or '')")
           if [[ -n "$sonar_login" ]]; then
             for perm in user codeviewer scan admin issueadmin; do
-              call POST "https://sonarcloud.io/api/permissions/add_user" --data-urlencode "login=${sonar_login}" --data-urlencode "projectKey=${SONAR_PROJECT_KEY}" --data-urlencode "permission=${perm}"
+              call POST "https://sonarcloud.io/api/permissions/add_user" --data-urlencode "login=${sonar_login}" --data-urlencode "projectKey=${SONAR_PROJECT_KEY}" --data-urlencode "permission=${perm}" --data-urlencode "organization=${SONAR_ORGANIZATION}"
             done
           fi
           cpp_profile_key=$(python3 -c "import json; from pathlib import Path; data=json.loads(Path('/tmp/sonar-cpp-profiles.json').read_text()); print(next((p.get('key','') for p in data.get('profiles', []) if p.get('language')=='cpp' and p.get('name')=='Sonar way'), ''))")
@@ -460,7 +460,7 @@ jobs:
           sonar_login=$(curl -fsS "${auth[@]}" "https://sonarcloud.io/api/users/current" | python3 -c "import json,sys; data=json.load(sys.stdin); print(data.get('login') or data.get('externalLogin') or '')")
           if [[ -n "$sonar_login" ]]; then
             for perm in user codeviewer scan admin issueadmin; do
-              curl -fsS "${auth[@]}" -X POST "https://sonarcloud.io/api/permissions/add_user" --data-urlencode "login=${sonar_login}" --data-urlencode "projectKey=${SONAR_PROJECT_KEY}" --data-urlencode "permission=${perm}" >/tmp/sonar-perm-${perm}.json || true
+              curl -fsS "${auth[@]}" -X POST "https://sonarcloud.io/api/permissions/add_user" --data-urlencode "login=${sonar_login}" --data-urlencode "projectKey=${SONAR_PROJECT_KEY}" --data-urlencode "permission=${perm}" --data-urlencode "organization=${SONAR_ORGANIZATION}" >/tmp/sonar-perm-${perm}.json || true
             done
           fi
           cpp_profile_key=$(curl -fsS "${auth[@]}" "https://sonarcloud.io/api/qualityprofiles/search?organization=${SONAR_ORGANIZATION}&language=cpp" | python3 -c "import json,sys; data=json.load(sys.stdin); print(next((p.get('key','') for p in data.get('profiles',[]) if p.get('name')=='Sonar way'), ''))")
