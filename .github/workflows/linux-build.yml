@@ -164,9 +164,13 @@ jobs:
           cache_tag="sccache-${{ runner.os }}"
           mkdir -p .sccache-cache .cache-restore
           if gh release download "$cache_tag" -R "$ARTIFACT_REPO" -p sccache-cache.tar.zst -D .cache-restore --clobber; then
-            sudo tar --zstd -xf .cache-restore/sccache-cache.tar.zst -C .sccache-cache || true
-            sudo chown -R "$USER:$USER" .sccache-cache || true
-            du -sh .sccache-cache || true
+            if tar --zstd -tf .cache-restore/sccache-cache.tar.zst | grep -Eq '(^/|(^|/)\.\.(/|$))'; then
+              echo "Unsafe sccache cache archive paths; skipping restore"
+            else
+              sudo tar --zstd --no-same-owner -xf .cache-restore/sccache-cache.tar.zst -C .sccache-cache || true
+              sudo chown -R "$USER:$USER" .sccache-cache || true
+              du -sh .sccache-cache || true
+            fi
           else
             echo "No private sccache cache release yet: $cache_tag"
           fi
@@ -183,7 +187,11 @@ jobs:
           if gh release download "$cache_tag" -R "$ARTIFACT_REPO" -p ue-build-products.tar.zst -D .build-cache-restore --clobber; then
             echo "== restored UE cache archive =="
             ls -lh .build-cache-restore/ue-build-products.tar.zst || true
-            tar --zstd -xf .build-cache-restore/ue-build-products.tar.zst -C source || true
+            if tar --zstd -tf .build-cache-restore/ue-build-products.tar.zst | grep -Ev '^(Binaries/|Intermediate/|Saved/UnrealBuildTool/|Plugins/[^/]+/(Binaries|Intermediate)/)' | grep -q .; then
+              echo "Unsafe UE cache archive paths; skipping restore"
+            else
+              tar --zstd --no-same-owner -xf .build-cache-restore/ue-build-products.tar.zst -C source || true
+            fi
             echo "== restored UE cache sizes =="
             du -sh source/Binaries source/Intermediate source/Saved/UnrealBuildTool source/Plugins/*/Binaries source/Plugins/*/Intermediate 2>/dev/null || true
             echo "== restored UE object files =="
@@ -443,8 +451,8 @@ jobs:
           sudo tar --zstd -cf dist/sccache-cache.tar.zst -C .sccache-cache . || true
           sudo chown "$USER:$USER" dist/sccache-cache.tar.zst 2>/dev/null || true
           if [[ -s dist/sccache-cache.tar.zst ]]; then
-            gh release delete "$cache_tag" -R "$ARTIFACT_REPO" --cleanup-tag -y >/dev/null 2>&1 || true
-            gh release create "$cache_tag" -R "$ARTIFACT_REPO" --title "$cache_tag compiler cache" --notes "Rolling sccache compiler cache for Linux CI" --latest=false
+            gh release view "$cache_tag" -R "$ARTIFACT_REPO" >/dev/null 2>&1 || gh release create "$cache_tag" -R "$ARTIFACT_REPO" --title "$cache_tag compiler cache" --notes "Rolling sccache compiler cache for Linux CI" --latest=false
+            gh release edit "$cache_tag" -R "$ARTIFACT_REPO" --title "$cache_tag compiler cache" --notes "Rolling sccache compiler cache for Linux CI" --latest=false
             gh release upload "$cache_tag" -R "$ARTIFACT_REPO" dist/sccache-cache.tar.zst dist/sccache-cache-size.txt --clobber
           fi
       - name: Save UE build products cache to private builds repo
@@ -476,8 +484,8 @@ jobs:
           sudo chown "$USER:$USER" dist/ue-build-products.tar.zst 2>/dev/null || true
           du -sh dist/ue-build-products.tar.zst >> dist/ue-build-products-size.txt 2>&1 || true
           if [[ -s dist/ue-build-products.tar.zst ]]; then
-            gh release delete "$cache_tag" -R "$ARTIFACT_REPO" --cleanup-tag -y >/dev/null 2>&1 || true
-            gh release create "$cache_tag" -R "$ARTIFACT_REPO" --title "$cache_tag UE build products" --notes "Rolling UE Binaries/Intermediate cache for Linux CI" --latest=false
+            gh release view "$cache_tag" -R "$ARTIFACT_REPO" >/dev/null 2>&1 || gh release create "$cache_tag" -R "$ARTIFACT_REPO" --title "$cache_tag UE build products" --notes "Rolling UE Binaries/Intermediate cache for Linux CI" --latest=false
+            gh release edit "$cache_tag" -R "$ARTIFACT_REPO" --title "$cache_tag UE build products" --notes "Rolling UE Binaries/Intermediate cache for Linux CI" --latest=false
             gh release upload "$cache_tag" -R "$ARTIFACT_REPO" dist/ue-build-products.tar.zst dist/ue-build-products-size.txt dist/ue-build-products-files.txt dist/ue-build-products-object-sample.txt --clobber
           fi
       - name: Write manifest
@@ -511,8 +519,8 @@ jobs:
           Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
           Build exit code: ${{ steps.build.outputs.exit_code }}
           EOF
-          gh release delete "$tag" -R "$ARTIFACT_REPO" --cleanup-tag -y >/dev/null 2>&1 || true
-          gh release create "$tag" -R "$ARTIFACT_REPO" --title "Linux build current" --notes-file "$body_file" --latest=false
+          gh release view "$tag" -R "$ARTIFACT_REPO" >/dev/null 2>&1 || gh release create "$tag" -R "$ARTIFACT_REPO" --title "Linux build current" --notes-file "$body_file" --latest=false
+          gh release edit "$tag" -R "$ARTIFACT_REPO" --title "Linux build current" --notes-file "$body_file" --latest=false
           files=(
             dist/MyProject-Linux-*.tar.gz
             dist/manifest.json
@@ -742,11 +750,13 @@ jobs:
           GH_TOKEN: ${{ secrets.ARTIFACT_REPO_TOKEN }}
         run: |
           set -euo pipefail
-          gh release delete "$ANALYSIS_TAG" -R "$ARTIFACT_REPO" --cleanup-tag -y >/dev/null 2>&1 || true
-          gh release create "$ANALYSIS_TAG" \
+          analysis_notes="Weekly static analysis for $SOURCE_REPO at $(cat $REPORT_DIR/source-sha.txt). Public run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          gh release view "$ANALYSIS_TAG" -R "$ARTIFACT_REPO" >/dev/null 2>&1 || gh release create "$ANALYSIS_TAG" \
             -R "$ARTIFACT_REPO" \
             --title "$ANALYSIS_TAG" \
-            --notes "Weekly static analysis for $SOURCE_REPO at $(cat $REPORT_DIR/source-sha.txt). Public run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            --notes "$analysis_notes" \
+            --latest=false
+          gh release edit "$ANALYSIS_TAG" -R "$ARTIFACT_REPO" --title "$ANALYSIS_TAG" --notes "$analysis_notes" --latest=false
           gh release upload "$ANALYSIS_TAG" \
             -R "$ARTIFACT_REPO" \
             "$REPORT_DIR/codeql-results.sarif" \
