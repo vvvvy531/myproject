@@ -16,7 +16,7 @@ permissions:
 env:
   SOURCE_REPO: vvvvy531/myproject-godot
   ARTIFACT_REPO: vvvvy531/myproject-linux-builds
-  AUTH_CREDENTIAL_PATH: coderabbit-auth/num.1/coderabbit-auth.tar.gz.enc
+  AUTH_CREDENTIAL_PATH: coderabbit-auth/num.1.tar.gz.enc
   REPORT_DIR: coderabbit-full-report
   MAX_CHUNKS_PER_RUN: "3"
 
@@ -343,5 +343,6 @@ jobs:
           rm -rf source "$HOME/.coderabbit" "$REPORT_DIR"
           rm -f ~/.git-credentials
           git config --global --unset-all credential.helper || true
+
 
 
