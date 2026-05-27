@@ -102,12 +102,15 @@ jobs:
               call POST "https://sonarcloud.io/api/permissions/add_user" --data-urlencode "login=${sonar_login}" --data-urlencode "projectKey=${SONAR_PROJECT_KEY}" --data-urlencode "permission=${perm}" --data-urlencode "organization=${SONAR_ORGANIZATION}"
             done
           fi
-          cpp_profile_key=$(python3 -c "import json; from pathlib import Path; data=json.loads(Path('/tmp/sonar-cpp-profiles.json').read_text()); print(next((p.get('key','') for p in data.get('profiles', []) if p.get('language')=='cpp' and p.get('name')=='Sonar way'), ''))")
-          if [[ -n "$cpp_profile_key" ]]; then
-            call POST "https://sonarcloud.io/api/qualityprofiles/add_project" --data-urlencode "project=${SONAR_PROJECT_KEY}" --data-urlencode "key=${cpp_profile_key}"
-          else
-            echo "No C++ Sonar way profile key found"
-          fi
+          for lang in c cpp objc; do
+            call GET "https://sonarcloud.io/api/qualityprofiles/search?organization=${SONAR_ORGANIZATION}&language=${lang}"
+            profile_key=$(python3 -c "import json; from pathlib import Path; data=json.loads(Path('/tmp/sonar-body.json').read_text()); print(next((p.get('key','') for p in data.get('profiles', []) if p.get('name')=='Sonar way'), ''))")
+            if [[ -n "$profile_key" ]]; then
+              call POST "https://sonarcloud.io/api/qualityprofiles/add_project" --data-urlencode "project=${SONAR_PROJECT_KEY}" --data-urlencode "key=${profile_key}"
+            else
+              echo "No ${lang} Sonar way profile key found"
+            fi
+          done
           call GET "https://sonarcloud.io/api/qualityprofiles/search?organization=${SONAR_ORGANIZATION}&project=${SONAR_PROJECT_KEY}"
           echo "Sonar preflight complete"
 
@@ -463,10 +466,12 @@ jobs:
               curl -fsS "${auth[@]}" -X POST "https://sonarcloud.io/api/permissions/add_user" --data-urlencode "login=${sonar_login}" --data-urlencode "projectKey=${SONAR_PROJECT_KEY}" --data-urlencode "permission=${perm}" --data-urlencode "organization=${SONAR_ORGANIZATION}" >/tmp/sonar-perm-${perm}.json || true
             done
           fi
-          cpp_profile_key=$(curl -fsS "${auth[@]}" "https://sonarcloud.io/api/qualityprofiles/search?organization=${SONAR_ORGANIZATION}&language=cpp" | python3 -c "import json,sys; data=json.load(sys.stdin); print(next((p.get('key','') for p in data.get('profiles',[]) if p.get('name')=='Sonar way'), ''))")
-          if [[ -n "$cpp_profile_key" ]]; then
-            curl -fsS "${auth[@]}" -X POST "https://sonarcloud.io/api/qualityprofiles/add_project" --data-urlencode "project=${SONAR_PROJECT_KEY}" --data-urlencode "key=${cpp_profile_key}" >/tmp/sonar-profile-cpp.json || true
-          fi
+          for lang in c cpp objc; do
+            profile_key=$(curl -fsS "${auth[@]}" "https://sonarcloud.io/api/qualityprofiles/search?organization=${SONAR_ORGANIZATION}&language=${lang}" | python3 -c "import json,sys; data=json.load(sys.stdin); print(next((p.get('key','') for p in data.get('profiles',[]) if p.get('name')=='Sonar way'), ''))")
+            if [[ -n "$profile_key" ]]; then
+              curl -fsS "${auth[@]}" -X POST "https://sonarcloud.io/api/qualityprofiles/add_project" --data-urlencode "project=${SONAR_PROJECT_KEY}" --data-urlencode "key=${profile_key}" >/tmp/sonar-profile-${lang}.json || true
+            fi
+          done
           curl -fsS "${auth[@]}" "https://sonarcloud.io/api/qualityprofiles/search?organization=${SONAR_ORGANIZATION}&project=${SONAR_PROJECT_KEY}" | python3 -m json.tool | head -120 || true
 
       - name: Run SonarCloud advanced analysis
