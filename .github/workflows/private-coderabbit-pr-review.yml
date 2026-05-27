@@ -207,6 +207,7 @@ jobs:
           coderabbit --version || true
           git status --short || true
           git rev-parse HEAD || true
+          git fetch origin "$PR_BASE_REF:$PR_BASE_REF"
           git cat-file -e "$PR_BASE_SHA^{commit}" || git fetch origin "$PR_BASE_SHA"
           coderabbit review --agent --base "$PR_BASE_REF" --base-commit "$PR_BASE_SHA" > coderabbit-pr-review.jsonl 2> coderabbit-pr-review.stderr
           status=$?
