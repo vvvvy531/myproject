@@ -73,7 +73,7 @@ jobs:
         shell: bash
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_PROJECT_KEY: ${{ vars.SONAR_PROJECT_KEY }}_ue_ci_review
+          SONAR_PROJECT_KEY: ${{ vars.SONAR_PROJECT_KEY }}_ue_ci_review_scan
           SONAR_ORGANIZATION: ${{ vars.SONAR_ORGANIZATION }}
         run: |
           set -u
@@ -440,11 +440,11 @@ jobs:
           test -s source/.sonar/bw-output/compile_commands.json
           ls -lh source/.sonar/bw-output
       - name: Prepare SonarCloud validation project
-        if: steps.runtime_guard.outputs.should_run == 'true' && (github.event_name != 'workflow_dispatch' || inputs.sonar_preflight_only != 'true') && github.event_name == 'workflow_dispatch' && inputs.static_analysis == 'true' && steps.sonar.outputs.enabled == 'true'
+        if: false
         shell: bash
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_PROJECT_KEY: ${{ vars.SONAR_PROJECT_KEY }}_ue_ci_review
+          SONAR_PROJECT_KEY: ${{ vars.SONAR_PROJECT_KEY }}_ue_ci_review_scan
           SONAR_ORGANIZATION: ${{ vars.SONAR_ORGANIZATION }}
         run: |
           set -euo pipefail
@@ -465,7 +465,7 @@ jobs:
           projectBaseDir: source
           scannerVersion: 7.3.0.5189
           args: >
-            -Dsonar.projectKey=${{ vars.SONAR_PROJECT_KEY }}_ue_ci_review
+            -Dsonar.projectKey=${{ vars.SONAR_PROJECT_KEY }}_ue_ci_review_scan
             -Dsonar.organization=${{ vars.SONAR_ORGANIZATION }}
             -Dsonar.sources=.
             -Dsonar.cfamily.compile-commands=.sonar/bw-output/compile_commands.json
