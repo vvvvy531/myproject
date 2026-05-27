@@ -467,6 +467,7 @@ jobs:
           args: >
             -Dsonar.projectKey=${{ vars.SONAR_PROJECT_KEY }}_ue_ci_review_scan
             -Dsonar.organization=${{ vars.SONAR_ORGANIZATION }}
+            -Dsonar.token=${{ secrets.SONAR_TOKEN }}
             -Dsonar.sources=.
             -Dsonar.cfamily.compile-commands=.sonar/bw-output/compile_commands.json
             -Dsonar.exclusions=**/Binaries/**,**/DerivedDataCache/**,**/Intermediate/**,**/Saved/**,**/.git/**,**/.github/**,**/graphify-out/**,**/.sonar/build-wrapper-linux-x86/**
@@ -698,6 +699,7 @@ jobs:
           args: >
             -Dsonar.projectKey=${{ vars.SONAR_PROJECT_KEY }}
             -Dsonar.organization=${{ vars.SONAR_ORGANIZATION }}
+            -Dsonar.token=${{ secrets.SONAR_TOKEN }}
             -Dsonar.sources=.
             -Dsonar.exclusions=**/Binaries/**,**/DerivedDataCache/**,**/Intermediate/**,**/Saved/**,**/.git/**,**/.github/**,**/graphify-out/**
       - name: Initialize CodeQL
