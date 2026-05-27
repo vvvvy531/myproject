@@ -95,6 +95,13 @@ jobs:
           call GET "https://sonarcloud.io/api/qualityprofiles/search?organization=${SONAR_ORGANIZATION}&project=${SONAR_PROJECT_KEY}"
           call GET "https://sonarcloud.io/api/projects/search?organization=${SONAR_ORGANIZATION}&projects=${SONAR_PROJECT_KEY}"
           call POST "https://sonarcloud.io/api/projects/create" --data-urlencode "organization=${SONAR_ORGANIZATION}" --data-urlencode "project=${SONAR_PROJECT_KEY}" --data-urlencode "name=${SONAR_PROJECT_KEY}"
+          call GET "https://sonarcloud.io/api/users/current"
+          sonar_login=$(python3 -c "import json; from pathlib import Path; data=json.loads(Path('/tmp/sonar-body.json').read_text()); print(data.get('login') or data.get('externalLogin') or '')")
+          if [[ -n "$sonar_login" ]]; then
+            for perm in user codeviewer scan admin issueadmin; do
+              call POST "https://sonarcloud.io/api/permissions/add_user" --data-urlencode "login=${sonar_login}" --data-urlencode "projectKey=${SONAR_PROJECT_KEY}" --data-urlencode "permission=${perm}"
+            done
+          fi
           cpp_profile_key=$(python3 -c "import json; from pathlib import Path; data=json.loads(Path('/tmp/sonar-cpp-profiles.json').read_text()); print(next((p.get('key','') for p in data.get('profiles', []) if p.get('language')=='cpp' and p.get('name')=='Sonar way'), ''))")
           if [[ -n "$cpp_profile_key" ]]; then
             call POST "https://sonarcloud.io/api/qualityprofiles/add_project" --data-urlencode "project=${SONAR_PROJECT_KEY}" --data-urlencode "key=${cpp_profile_key}"
