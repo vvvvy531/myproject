@@ -36,7 +36,7 @@ env:
 
   ARTIFACT_REPO: vvvvy531/myproject-linux-builds
 
-  AUTH_CREDENTIAL_PATH: coderabbit-auth/num.1/coderabbit-auth.tar.gz.enc
+  AUTH_CREDENTIAL_PATH: coderabbit-auth/num.1.tar.gz.enc
 
   REPORT_DIR: coderabbit-full-report
 
@@ -694,6 +694,7 @@ jobs:
           rm -f ~/.git-credentials
 
           git config --global --unset-all credential.helper || true
+
 
 
 
