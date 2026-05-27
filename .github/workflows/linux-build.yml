@@ -73,7 +73,7 @@ jobs:
         shell: bash
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_PROJECT_KEY: ${{ vars.SONAR_PROJECT_KEY }}_ue_ci_review_scan
+          SONAR_PROJECT_KEY: ${{ vars.SONAR_PROJECT_KEY }}_ue_ci_review_perms
           SONAR_ORGANIZATION: ${{ vars.SONAR_ORGANIZATION }}
         run: |
           set -u
@@ -440,16 +440,22 @@ jobs:
           test -s source/.sonar/bw-output/compile_commands.json
           ls -lh source/.sonar/bw-output
       - name: Prepare SonarCloud validation project
-        if: false
+        if: steps.runtime_guard.outputs.should_run == 'true' && (github.event_name != 'workflow_dispatch' || inputs.sonar_preflight_only != 'true') && github.event_name == 'workflow_dispatch' && inputs.static_analysis == 'true' && steps.sonar.outputs.enabled == 'true'
         shell: bash
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_PROJECT_KEY: ${{ vars.SONAR_PROJECT_KEY }}_ue_ci_review_scan
+          SONAR_PROJECT_KEY: ${{ vars.SONAR_PROJECT_KEY }}_ue_ci_review_perms
           SONAR_ORGANIZATION: ${{ vars.SONAR_ORGANIZATION }}
         run: |
           set -euo pipefail
           auth=(-u "${SONAR_TOKEN}:")
           curl -fsS "${auth[@]}" -X POST "https://sonarcloud.io/api/projects/create"             --data-urlencode "organization=${SONAR_ORGANIZATION}"             --data-urlencode "project=${SONAR_PROJECT_KEY}"             --data-urlencode "name=${SONAR_PROJECT_KEY}" >/tmp/sonar-create.json || true
+          sonar_login=$(curl -fsS "${auth[@]}" "https://sonarcloud.io/api/users/current" | python3 -c "import json,sys; data=json.load(sys.stdin); print(data.get('login') or data.get('externalLogin') or '')")
+          if [[ -n "$sonar_login" ]]; then
+            for perm in user codeviewer scan admin issueadmin; do
+              curl -fsS "${auth[@]}" -X POST "https://sonarcloud.io/api/permissions/add_user" --data-urlencode "login=${sonar_login}" --data-urlencode "projectKey=${SONAR_PROJECT_KEY}" --data-urlencode "permission=${perm}" >/tmp/sonar-perm-${perm}.json || true
+            done
+          fi
           cpp_profile_key=$(curl -fsS "${auth[@]}" "https://sonarcloud.io/api/qualityprofiles/search?organization=${SONAR_ORGANIZATION}&language=cpp" | python3 -c "import json,sys; data=json.load(sys.stdin); print(next((p.get('key','') for p in data.get('profiles',[]) if p.get('name')=='Sonar way'), ''))")
           if [[ -n "$cpp_profile_key" ]]; then
             curl -fsS "${auth[@]}" -X POST "https://sonarcloud.io/api/qualityprofiles/add_project" --data-urlencode "project=${SONAR_PROJECT_KEY}" --data-urlencode "key=${cpp_profile_key}" >/tmp/sonar-profile-cpp.json || true
@@ -465,7 +471,7 @@ jobs:
           projectBaseDir: source
           scannerVersion: 7.3.0.5189
           args: >
-            -Dsonar.projectKey=${{ vars.SONAR_PROJECT_KEY }}_ue_ci_review_scan
+            -Dsonar.projectKey=${{ vars.SONAR_PROJECT_KEY }}_ue_ci_review_perms
             -Dsonar.organization=${{ vars.SONAR_ORGANIZATION }}
             -Dsonar.token=${{ secrets.SONAR_TOKEN }}
             -Dsonar.sources=.
