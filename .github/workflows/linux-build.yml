@@ -73,7 +73,7 @@ jobs:
         shell: bash
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_PROJECT_KEY: ${{ vars.SONAR_PROJECT_KEY }}_ci_validation_${{ github.run_id }}
+          SONAR_PROJECT_KEY: ${{ vars.SONAR_PROJECT_KEY }}_ue_ci_review
           SONAR_ORGANIZATION: ${{ vars.SONAR_ORGANIZATION }}
         run: |
           set -u
@@ -444,7 +444,7 @@ jobs:
         shell: bash
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_PROJECT_KEY: ${{ vars.SONAR_PROJECT_KEY }}_ci_validation_${{ github.run_id }}
+          SONAR_PROJECT_KEY: ${{ vars.SONAR_PROJECT_KEY }}_ue_ci_review
           SONAR_ORGANIZATION: ${{ vars.SONAR_ORGANIZATION }}
         run: |
           set -euo pipefail
@@ -465,7 +465,7 @@ jobs:
           projectBaseDir: source
           scannerVersion: 7.3.0.5189
           args: >
-            -Dsonar.projectKey=${{ vars.SONAR_PROJECT_KEY }}_ci_validation_${{ github.run_id }}
+            -Dsonar.projectKey=${{ vars.SONAR_PROJECT_KEY }}_ue_ci_review
             -Dsonar.organization=${{ vars.SONAR_ORGANIZATION }}
             -Dsonar.sources=.
             -Dsonar.cfamily.compile-commands=.sonar/bw-output/compile_commands.json
