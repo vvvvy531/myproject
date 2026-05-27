@@ -398,6 +398,14 @@ jobs:
             -Dsonar.sources=.
             -Dsonar.cfamily.compile-commands=.sonar/bw-output/compile_commands.json
             -Dsonar.exclusions=**/Binaries/**,**/DerivedDataCache/**,**/Intermediate/**,**/Saved/**,**/.git/**,**/.github/**,**/graphify-out/**,**/.sonar/build-wrapper-linux-x86/**
+      - name: Fix CodeQL database permissions after container build
+        if: steps.runtime_guard.outputs.should_run == 'true' && github.event_name == 'workflow_dispatch' && inputs.static_analysis == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo chown -R "$USER:$USER" "$RUNNER_TEMP/codeql_databases" "$RUNNER_TEMP/trapCaches" 2>/dev/null || true
+          find "$RUNNER_TEMP/codeql_databases" "$RUNNER_TEMP/trapCaches" -maxdepth 3 -type d -exec chmod u+rwx {} + 2>/dev/null || true
+
       - name: Run CodeQL advanced analysis
         if: steps.runtime_guard.outputs.should_run == 'true' && github.event_name == 'workflow_dispatch' && inputs.static_analysis == 'true'
         uses: github/codeql-action/analyze@v4
