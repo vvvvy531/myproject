@@ -395,8 +395,36 @@ jobs:
                 rm -rf .sonar/bw-output/*
                 echo "Advanced analysis: running native UE build then generating compile_commands.json from UBT response files"
                 "${build_cmd[@]}" 2>&1 | tee ../dist/build.log
-                py_code=$'import json, pathlib, shlex\nroot=pathlib.Path.cwd()\nitems=[]\nfor rsp in root.glob("Intermediate/Build/**/*.rsp"):\n    try:\n        args=shlex.split(rsp.read_text(errors="replace"), posix=True)\n    except Exception:\n        continue\n    src=[a for a in args if a.endswith((".cpp",".cc",".c",".cxx",".mm",".m"))]\n    if not src:\n        continue\n    compiler="clang++"\n    cmd=" ".join([shlex.quote(compiler)] + [shlex.quote(a) for a in args])\n    for f in src:\n        items.append({"directory": str(root), "command": cmd, "file": str((root / f).resolve() if not pathlib.Path(f).is_absolute() else pathlib.Path(f))})\nout=root/".sonar/bw-output/compile_commands.json"\nout.parent.mkdir(parents=True, exist_ok=True)\nout.write_text(json.dumps(items, indent=2), encoding="utf-8")\n(root/".sonar/bw-output/build-wrapper-dump.json").write_text(json.dumps({"version":0,"captures":len(items)}), encoding="utf-8")\nprint(f"generated {len(items)} compile commands")'
-                python3 -c "$py_code" | tee ../dist/compile-commands-generation.log
+                cat > /tmp/generate_compile_commands.py <<'PY'
+import json
+import pathlib
+import shlex
+
+root = pathlib.Path.cwd()
+items = []
+for rsp in root.glob("Intermediate/Build/**/*.rsp"):
+    try:
+        args = shlex.split(rsp.read_text(errors="replace"), posix=True)
+    except Exception:
+        continue
+    src = [a for a in args if a.endswith((".cpp", ".cc", ".c", ".cxx", ".mm", ".m"))]
+    if not src:
+        continue
+    compiler = "clang++"
+    cmd = " ".join([shlex.quote(compiler)] + [shlex.quote(a) for a in args])
+    for f in src:
+        path = pathlib.Path(f)
+        if not path.is_absolute():
+            path = (root / path).resolve()
+        items.append({"directory": str(root), "command": cmd, "file": str(path)})
+
+out = root / ".sonar/bw-output/compile_commands.json"
+out.parent.mkdir(parents=True, exist_ok=True)
+out.write_text(json.dumps(items, indent=2), encoding="utf-8")
+(root / ".sonar/bw-output/build-wrapper-dump.json").write_text(json.dumps({"version": 0, "captures": len(items)}), encoding="utf-8")
+print(f"generated {len(items)} compile commands")
+PY
+                python3 /tmp/generate_compile_commands.py | tee ../dist/compile-commands-generation.log
               else
                 "${build_cmd[@]}" 2>&1 | tee ../dist/build.log
               fi
