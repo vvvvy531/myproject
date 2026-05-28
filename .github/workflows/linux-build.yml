@@ -304,6 +304,7 @@ jobs:
             -e TARGET_NAME="$TARGET_NAME" \
             -e GITHUB_RUN_NUMBER="$GITHUB_RUN_NUMBER" \
             -e ENABLE_SCCACHE="${{ vars.ENABLE_SCCACHE }}" \
+            -e STATIC_ANALYSIS="${{ inputs.static_analysis }}" \
             -v "$HOST_SOURCE:$HOST_SOURCE" \
             -v "$HOST_DIST:$HOST_DIST" \
             -v "$PWD/.sccache-cache:/workspace/.sccache-cache" \
@@ -373,7 +374,7 @@ jobs:
               else
                 echo "sccache disabled for validation build"
               fi
-              if [[ -x .sonar/build-wrapper-linux-x86/build-wrapper-linux-x86-64 ]]; then
+              if [[ "${STATIC_ANALYSIS:-false}" == "true" && -x .sonar/build-wrapper-linux-x86/build-wrapper-linux-x86-64 ]]; then
                 echo "Advanced analysis: disabling sccache and removing UE incremental outputs before build-wrapper capture"
                 if [[ -n "${toolchain_bin:-}" ]]; then
                   for compiler in clang clang++; do
@@ -389,9 +390,13 @@ jobs:
               fi
               set +e
               build_cmd=(/home/ue4/UnrealEngine/Engine/Build/BatchFiles/Linux/Build.sh "$TARGET_NAME" Linux Development "$PWD/$PROJECT_FILE" -WaitMutex -NoHotReload -NoUBA -MaxParallelActions=4 -VeryVerbose)
-              if [[ -x .sonar/build-wrapper-linux-x86/build-wrapper-linux-x86-64 ]]; then
-                rm -rf .sonar/bw-output
-                .sonar/build-wrapper-linux-x86/build-wrapper-linux-x86-64 --out-dir .sonar/bw-output "${build_cmd[@]}" 2>&1 | tee ../dist/build.log
+              if [[ "${STATIC_ANALYSIS:-false}" == "true" ]]; then
+                mkdir -p .sonar/bw-output
+                rm -rf .sonar/bw-output/*
+                echo "Advanced analysis: running native UE build then generating compile_commands.json from UBT response files"
+                "${build_cmd[@]}" 2>&1 | tee ../dist/build.log
+                py_code=$'import json, pathlib, shlex\nroot=pathlib.Path.cwd()\nitems=[]\nfor rsp in root.glob("Intermediate/Build/**/*.rsp"):\n    try:\n        args=shlex.split(rsp.read_text(errors="replace"), posix=True)\n    except Exception:\n        continue\n    src=[a for a in args if a.endswith((".cpp",".cc",".c",".cxx",".mm",".m"))]\n    if not src:\n        continue\n    compiler="clang++"\n    cmd=" ".join([shlex.quote(compiler)] + [shlex.quote(a) for a in args])\n    for f in src:\n        items.append({"directory": str(root), "command": cmd, "file": str((root / f).resolve() if not pathlib.Path(f).is_absolute() else pathlib.Path(f))})\nout=root/".sonar/bw-output/compile_commands.json"\nout.parent.mkdir(parents=True, exist_ok=True)\nout.write_text(json.dumps(items, indent=2), encoding="utf-8")\n(root/".sonar/bw-output/build-wrapper-dump.json").write_text(json.dumps({"version":0,"captures":len(items)}), encoding="utf-8")\nprint(f"generated {len(items)} compile commands")'
+                python3 -c "$py_code" | tee ../dist/compile-commands-generation.log
               else
                 "${build_cmd[@]}" 2>&1 | tee ../dist/build.log
               fi
@@ -669,6 +674,7 @@ jobs:
             dist/ubt.log
             dist/intermediate-diagnostics-files.txt
             dist/intermediate-diagnostics.tar.gz
+            dist/compile-commands-generation.log
           )
           for file in "${files[@]}"; do
             [[ -f "$file" && -s "$file" ]] || continue
