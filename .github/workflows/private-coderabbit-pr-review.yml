@@ -192,6 +192,74 @@ jobs:
           echo "status=$status" >> "$GITHUB_OUTPUT"
           exit "$status"
 
+      - name: Post CodeRabbit PR review comment
+        if: success()
+        working-directory: source
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          ACCOUNT: ${{ steps.account.outputs.account }}
+        run: |
+          set +x
+          set -euo pipefail
+          python3 - <<'PY' > coderabbit-pr-review.md
+          import json, os
+          from pathlib import Path
+
+          path = Path('coderabbit-pr-review.jsonl')
+          findings = []
+          statuses = []
+          complete = None
+          if path.exists():
+              for line in path.read_text(encoding='utf-8', errors='replace').splitlines():
+                  line = line.strip()
+                  if not line:
+                      continue
+                  try:
+                      event = json.loads(line)
+                  except json.JSONDecodeError:
+                      continue
+                  event_type = event.get('type')
+                  if event_type == 'finding':
+                      findings.append(event)
+                  elif event_type == 'status':
+                      statuses.append(event)
+                  elif event_type == 'complete':
+                      complete = event
+
+          print('## CodeRabbit Review')
+          print()
+          print(f'Account: {os.environ.get("ACCOUNT", "unknown")}')
+          print(f'Run: {os.environ.get("RUN_URL", "")}')
+          print()
+          if findings:
+              print(f'Found {len(findings)} finding(s).')
+              print()
+              print('## Findings')
+              print()
+              for item in findings:
+                  severity = item.get('severity', 'unknown')
+                  file_name = item.get('fileName', 'unknown')
+                  instructions = (item.get('codegenInstructions') or '').strip()
+                  print(f'- **{severity}** `{file_name}`')
+                  if instructions:
+                      print()
+                      for paragraph in instructions.split('\n\n'):
+                          paragraph = paragraph.strip()
+                          if paragraph:
+                              print(f'  {paragraph}')
+                      print()
+          else:
+              print('No CodeRabbit findings reported.')
+              print()
+              if complete:
+                  print(f"Status: `{complete.get('status', 'complete')}`")
+              elif statuses:
+                  last = statuses[-1]
+                  print(f"Last status: `{last.get('status', 'unknown')}`")
+          PY
+          gh pr comment "$PR_NUMBER" --repo "$SOURCE_REPO" --body-file coderabbit-pr-review.md
       - name: Update account rotation state
         if: always()
         shell: bash
