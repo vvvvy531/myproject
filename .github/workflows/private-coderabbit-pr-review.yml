@@ -66,7 +66,7 @@ jobs:
             -f target_url="$RUN_URL"
 
       - name: Checkout private source
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
           repository: ${{ env.SOURCE_REPO }}
           token: ${{ secrets.PRIVATE_SOURCE_PAT }}
