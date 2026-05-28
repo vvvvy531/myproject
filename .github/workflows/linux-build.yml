@@ -395,35 +395,7 @@ jobs:
                 rm -rf .sonar/bw-output/*
                 echo "Advanced analysis: running native UE build then generating compile_commands.json from UBT response files"
                 "${build_cmd[@]}" 2>&1 | tee ../dist/build.log
-                cat > /tmp/generate_compile_commands.py <<'PY'
-                import json
-                import pathlib
-                import shlex
-                
-                root = pathlib.Path.cwd()
-                items = []
-                for rsp in root.glob("Intermediate/Build/**/*.rsp"):
-                    try:
-                        args = shlex.split(rsp.read_text(errors="replace"), posix=True)
-                    except Exception:
-                        continue
-                    src = [a for a in args if a.endswith((".cpp", ".cc", ".c", ".cxx", ".mm", ".m"))]
-                    if not src:
-                        continue
-                    compiler = "clang++"
-                    cmd = " ".join([shlex.quote(compiler)] + [shlex.quote(a) for a in args])
-                    for f in src:
-                        path = pathlib.Path(f)
-                        if not path.is_absolute():
-                            path = (root / path).resolve()
-                        items.append({"directory": str(root), "command": cmd, "file": str(path)})
-                
-                out = root / ".sonar/bw-output/compile_commands.json"
-                out.parent.mkdir(parents=True, exist_ok=True)
-                out.write_text(json.dumps(items, indent=2), encoding="utf-8")
-                (root / ".sonar/bw-output/build-wrapper-dump.json").write_text(json.dumps({"version": 0, "captures": len(items)}), encoding="utf-8")
-                print(f"generated {len(items)} compile commands")
-                PY
+                printf "%s" "aW1wb3J0IGpzb24KaW1wb3J0IHBhdGhsaWIKaW1wb3J0IHNobGV4Cgpyb290ID0gcGF0aGxpYi5QYXRoLmN3ZCgpCml0ZW1zID0gW10KZm9yIHJzcCBpbiByb290Lmdsb2IoIkludGVybWVkaWF0ZS9CdWlsZC8qKi8qLnJzcCIpOgogICAgdHJ5OgogICAgICAgIGFyZ3MgPSBzaGxleC5zcGxpdChyc3AucmVhZF90ZXh0KGVycm9ycz0icmVwbGFjZSIpLCBwb3NpeD1UcnVlKQogICAgZXhjZXB0IEV4Y2VwdGlvbjoKICAgICAgICBjb250aW51ZQogICAgc3JjID0gW2EgZm9yIGEgaW4gYXJncyBpZiBhLmVuZHN3aXRoKCgiLmNwcCIsICIuY2MiLCAiLmMiLCAiLmN4eCIsICIubW0iLCAiLm0iKSldCiAgICBpZiBub3Qgc3JjOgogICAgICAgIGNvbnRpbnVlCiAgICBjb21waWxlciA9ICJjbGFuZysrIgogICAgY21kID0gIiAiLmpvaW4oW3NobGV4LnF1b3RlKGNvbXBpbGVyKV0gKyBbc2hsZXgucXVvdGUoYSkgZm9yIGEgaW4gYXJnc10pCiAgICBmb3IgZiBpbiBzcmM6CiAgICAgICAgcGF0aCA9IHBhdGhsaWIuUGF0aChmKQogICAgICAgIGlmIG5vdCBwYXRoLmlzX2Fic29sdXRlKCk6CiAgICAgICAgICAgIHBhdGggPSAocm9vdCAvIHBhdGgpLnJlc29sdmUoKQogICAgICAgIGl0ZW1zLmFwcGVuZCh7ImRpcmVjdG9yeSI6IHN0cihyb290KSwgImNvbW1hbmQiOiBjbWQsICJmaWxlIjogc3RyKHBhdGgpfSkKCm91dCA9IHJvb3QgLyAiLnNvbmFyL2J3LW91dHB1dC9jb21waWxlX2NvbW1hbmRzLmpzb24iCm91dC5wYXJlbnQubWtkaXIocGFyZW50cz1UcnVlLCBleGlzdF9vaz1UcnVlKQpvdXQud3JpdGVfdGV4dChqc29uLmR1bXBzKGl0ZW1zLCBpbmRlbnQ9MiksIGVuY29kaW5nPSJ1dGYtOCIpCihyb290IC8gIi5zb25hci9idy1vdXRwdXQvYnVpbGQtd3JhcHBlci1kdW1wLmpzb24iKS53cml0ZV90ZXh0KGpzb24uZHVtcHMoeyJ2ZXJzaW9uIjogMCwgImNhcHR1cmVzIjogbGVuKGl0ZW1zKX0pLCBlbmNvZGluZz0idXRmLTgiKQpwcmludChmImdlbmVyYXRlZCB7bGVuKGl0ZW1zKX0gY29tcGlsZSBjb21tYW5kcyIpCmlmIG5vdCBpdGVtczoKICAgIHJhaXNlIFN5c3RlbUV4aXQoMSkK" | base64 -d > /tmp/generate_compile_commands.py
                 python3 /tmp/generate_compile_commands.py | tee ../dist/compile-commands-generation.log
               else
                 "${build_cmd[@]}" 2>&1 | tee ../dist/build.log
