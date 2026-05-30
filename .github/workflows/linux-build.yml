@@ -327,9 +327,9 @@ jobs:
             zstd -dc .cache-restore/sccache-cache.tar.zst | python3 /tmp/_validate_tar.py
             rm -f /tmp/_validate_tar.py
 
-            sudo tar --zstd --no-same-owner --no-same-permissions -xf .cache-restore/sccache-cache.tar.zst -C .sccache-cache || true
+            sudo tar --zstd --no-same-owner --no-same-permissions -xf .cache-restore/sccache-cache.tar.zst -C .sccache-cache
 
-            sudo chown -R "$USER:$USER" .sccache-cache || true
+            sudo chown -R "$USER:$USER" .sccache-cache
 
             du -sh .sccache-cache || true
 
@@ -388,7 +388,7 @@ jobs:
             PY
             rm -f .build-cache-restore/ue-build-products.tar
 
-            tar --zstd --no-same-owner --no-same-permissions -xf .build-cache-restore/ue-build-products.tar.zst -C source || true
+            tar --zstd --no-same-owner --no-same-permissions -xf .build-cache-restore/ue-build-products.tar.zst -C source
 
             echo "== restored UE cache sizes =="
 
