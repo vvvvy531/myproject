@@ -16,7 +16,7 @@ permissions:
 env:
   SOURCE_REPO: vvvvy531/myproject-godot
   ARTIFACT_REPO: vvvvy531/myproject-linux-builds
-  AUTH_TAG: coderabbit-auth
+  AUTH_CREDENTIAL_PATH: coderabbit-auth/num.1.tar.gz.enc
   REPORT_DIR: coderabbit-full-report
   MAX_CHUNKS_PER_RUN: "3"
 
@@ -63,10 +63,11 @@ jobs:
           CODERABBIT_AUTH_PASSWORD: ${{ secrets.CODERABBIT_AUTH_PASSWORD }}
         run: |
           set -euo pipefail
-          gh release download "$AUTH_TAG" -R "$ARTIFACT_REPO" -p coderabbit-auth.tar.gz.enc -D /tmp --clobber
+          git clone --depth 1 --branch linux-artifacts "https://x-access-token:${GH_TOKEN}@github.com/${ARTIFACT_REPO}.git" /tmp/coderabbit-auth-repo
+          cp "/tmp/coderabbit-auth-repo/${AUTH_CREDENTIAL_PATH}" /tmp/coderabbit-auth.tar.gz.enc
           openssl enc -d -aes-256-cbc -pbkdf2 -in /tmp/coderabbit-auth.tar.gz.enc -out /tmp/coderabbit-auth.tar.gz -pass pass:"$CODERABBIT_AUTH_PASSWORD"
           tar -xzf /tmp/coderabbit-auth.tar.gz -C "$HOME"
-          rm -f /tmp/coderabbit-auth.tar.gz /tmp/coderabbit-auth.tar.gz.enc
+          rm -rf /tmp/coderabbit-auth.tar.gz /tmp/coderabbit-auth.tar.gz.enc /tmp/coderabbit-auth-repo
           chmod 700 "$HOME/.coderabbit" || true
 
       - name: Determine full history range and chunk window
@@ -342,5 +343,6 @@ jobs:
           rm -rf source "$HOME/.coderabbit" "$REPORT_DIR"
           rm -f ~/.git-credentials
           git config --global --unset-all credential.helper || true
+
 
 
