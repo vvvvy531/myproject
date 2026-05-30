@@ -307,9 +307,14 @@ jobs:
             import sys, tarfile
             archive = ".cache-restore/sccache-cache.tar.zst"
             allowed = set()
+            safe_types = {tarfile.REGTYPE, tarfile.DIRTYPE}
+            for name in ("GNUTYPE", "LONGLINKTYPE", "LNAMETYPE"):
+                t = getattr(tarfile, name, None)
+                if t is not None:
+                    safe_types.add(t)
             with tarfile.open(archive, "r:zstd") as tf:
                 for member in tf.getmembers():
-                    if member.type not in (tarfile.REGTYPE, tarfile.DIRTYPE, tarfile.GNUTYPE, tarfile.LONGLINKTYPE, tarfile.LNAMETYPE):
+                    if member.type not in safe_types:
                         print(f"Rejected non-regular entry: {member.name!r} (type={member.type})", file=sys.stderr)
                         sys.exit(1)
                     name = member.name.rstrip("/")
@@ -366,9 +371,14 @@ jobs:
                 "Plugins/Flow/Binaries/", "Plugins/Flow/Intermediate/",
                 "Plugins/YarnSpinner-Unreal-main/Binaries/", "Plugins/YarnSpinner-Unreal-main/Intermediate/",
             )
+            safe_types = {tarfile.REGTYPE, tarfile.DIRTYPE}
+            for name in ("GNUTYPE", "LONGLINKTYPE", "LNAMETYPE"):
+                t = getattr(tarfile, name, None)
+                if t is not None:
+                    safe_types.add(t)
             with tarfile.open(archive, "r:zstd") as tf:
                 for member in tf.getmembers():
-                    if member.type not in (tarfile.REGTYPE, tarfile.DIRTYPE, tarfile.GNUTYPE, tarfile.LONGLINKTYPE, tarfile.LNAMETYPE):
+                    if member.type not in safe_types:
                         print(f"Rejected non-regular entry: {member.name!r} (type={member.type})", file=sys.stderr)
                         sys.exit(1)
                     name = member.name.rstrip("/")
