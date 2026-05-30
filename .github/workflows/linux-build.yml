@@ -38,6 +38,11 @@ name: Private Source Linux Build
 
     types: [linux-build]
 
+concurrency:
+
+  group: linux-build-${{ github.event.client_payload.source_ref || 'main' }}
+  cancel-in-progress: false
+
 permissions:
 
   contents: read
@@ -303,13 +308,15 @@ jobs:
 
           if gh release download "$cache_tag" -R "$ARTIFACT_REPO" -p sccache-cache.tar.zst -D .cache-restore --clobber; then
 
+            zstd -dc .cache-restore/sccache-cache.tar.zst > .cache-restore/sccache-cache.tar
             python3 - <<'PY'
             import sys, tarfile
-            archive = ".cache-restore/sccache-cache.tar.zst"
+            archive = ".cache-restore/sccache-cache.tar"
             allowed = set()
-            with tarfile.open(archive, "r:zstd") as tf:
+            safe_types = {tarfile.REGTYPE, tarfile.DIRTYPE}
+            with tarfile.open(archive, "r:") as tf:
                 for member in tf.getmembers():
-                    if member.type not in (tarfile.REGTYPE, tarfile.DIRTYPE, tarfile.GNUTYPE, tarfile.LONGLINKTYPE, tarfile.LNAMETYPE):
+                    if member.type not in safe_types:
                         print(f"Rejected non-regular entry: {member.name!r} (type={member.type})", file=sys.stderr)
                         sys.exit(1)
                     name = member.name.rstrip("/")
@@ -319,6 +326,7 @@ jobs:
                     allowed.add(name)
             print("sccache archive path validation passed")
             PY
+            rm -f .cache-restore/sccache-cache.tar
 
             sudo tar --zstd --no-same-owner --no-same-permissions -xf .cache-restore/sccache-cache.tar.zst -C .sccache-cache || true
 
@@ -358,17 +366,19 @@ jobs:
 
             ls -lh .build-cache-restore/ue-build-products.tar.zst || true
 
+            zstd -dc .build-cache-restore/ue-build-products.tar.zst > .build-cache-restore/ue-build-products.tar
             python3 - <<'PY'
             import sys, tarfile
-            archive = ".build-cache-restore/ue-build-products.tar.zst"
+            archive = ".build-cache-restore/ue-build-products.tar"
             allowed_prefixes = (
                 "Binaries/", "Intermediate/", "Saved/",
                 "Plugins/Flow/Binaries/", "Plugins/Flow/Intermediate/",
                 "Plugins/YarnSpinner-Unreal-main/Binaries/", "Plugins/YarnSpinner-Unreal-main/Intermediate/",
             )
-            with tarfile.open(archive, "r:zstd") as tf:
+            safe_types = {tarfile.REGTYPE, tarfile.DIRTYPE}
+            with tarfile.open(archive, "r:") as tf:
                 for member in tf.getmembers():
-                    if member.type not in (tarfile.REGTYPE, tarfile.DIRTYPE, tarfile.GNUTYPE, tarfile.LONGLINKTYPE, tarfile.LNAMETYPE):
+                    if member.type not in safe_types:
                         print(f"Rejected non-regular entry: {member.name!r} (type={member.type})", file=sys.stderr)
                         sys.exit(1)
                     name = member.name.rstrip("/")
@@ -380,6 +390,7 @@ jobs:
                         sys.exit(1)
             print("UE build-products archive path validation passed")
             PY
+            rm -f .build-cache-restore/ue-build-products.tar
 
             tar --zstd --no-same-owner --no-same-permissions -xf .build-cache-restore/ue-build-products.tar.zst -C source || true
 
@@ -888,6 +899,27 @@ jobs:
             done
 
           done
+
+      - name: Prune old linux-build releases
+
+        if: steps.runtime_guard.outputs.should_run == 'true' && always()
+
+        shell: bash
+
+        env:
+
+          GH_TOKEN: ${{ secrets.ARTIFACT_REPO_TOKEN }}
+
+        run: |
+
+          set -euo pipefail
+
+          gh release list -R "$ARTIFACT_REPO" --limit 100 --json tagName,createdAt \
+            --jq '[.[] | select(.tagName | startswith("linux-"))] | sort_by(.createdAt) | reverse | .[20:] | .[].tagName' | \
+            while IFS= read -r old_tag; do
+              [[ -n "$old_tag" ]] || continue
+              gh release delete "$old_tag" -R "$ARTIFACT_REPO" --cleanup-tag --yes || true
+            done
 
       - name: Report Linux build failure to private source issues
 
