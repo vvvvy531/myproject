@@ -109,10 +109,10 @@ jobs:
           match = re.search(r'```json\s*(\{.*?\})\s*```', body, re.S)
           state = json.loads(match.group(1)) if match else {}
           account = int(state.get('next_account', 2) or 2)
-          if account < 2 or account > 6:
+          if account < 2 or account > 21:
               account = 2
           usage = state.get('usage', {})
-          accounts = list(range(2, 7))
+          accounts = list(range(2, 22))
           selected = account
           selected_count = 0
           selected_window = now
@@ -127,7 +127,7 @@ jobs:
                   selected_count = count
                   selected_window = window
                   break
-              selected = 2 if selected == 6 else selected + 1
+              selected = 2 if selected == 21 else selected + 1
           else:
               print('No CodeRabbit account quota available in current hour', file=sys.stderr)
               sys.exit(1)
@@ -169,7 +169,7 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
-          GITHUB_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
+          GITHUB_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
         run: |
           set +x
           set +e
@@ -302,7 +302,7 @@ jobs:
           usage[str(account)] = {'window_start': current_window, 'count': count}
           next_account = account
           if count >= 3:
-              next_account = 2 if account == 6 else account + 1
+              next_account = 2 if account == 21 else account + 1
           state = {
               'next_account': next_account,
               'last_account': account,

@@ -1,46 +1,87 @@
 name: Private Source Linux Build
+
 "on":
+
   workflow_dispatch:
+
     inputs:
+
       static_analysis:
+
         description: Run weekly static analysis job instead of Linux build
+
         required: false
+
         default: "false"
+
         type: choice
+
         options: ["false", "true"]
+
       source_ref:
+
         description: Private source ref to build
+
         required: false
+
         default: main
+
       source_sha:
+
         description: Optional private source SHA to verify
+
         required: false
+
         default: ""
+
   repository_dispatch:
+
     types: [linux-build]
+
 concurrency:
-  group: private-source-linux-build-artifacts
+
+  group: linux-build-${{ github.event.client_payload.source_ref || 'main' }}
   cancel-in-progress: false
+
 permissions:
+
   contents: read
+
   packages: read
+
   actions: read
+
   pull-requests: read
   security-events: read
+
 env:
+
   SOURCE_REPO: vvvvy531/myproject-source
+
   ARTIFACT_REPO: vvvvy531/myproject-linux-builds
+
   PROJECT_FILE: MyProject.uproject
+
   TARGET_NAME: MyProject
+
   UE_IMAGE: ghcr.io/epicgames/unreal-engine:dev-slim-5.7.4
+
   SOURCE_REF: ${{ github.event.client_payload.source_ref || inputs.source_ref || 'main' }}
+
   SOURCE_SHA: ${{ github.event.client_payload.source_sha || inputs.source_sha || '' }}
+
 jobs:
+
   build-linux:
+
     name: UE 5.7.4 Linux smoke build
+
     runs-on: ubuntu-latest
+
     timeout-minutes: 120
+
     steps:
+
       - name: Runtime skip when Linux build already running
         id: runtime_guard
         shell: bash
@@ -62,180 +103,376 @@ jobs:
               echo "EOF"
             } >> "$GITHUB_OUTPUT"
           fi
+
       - name: Report skipped Linux build to private source issues
+
         if: false
+
         shell: bash
+
         env:
+
           GH_TOKEN: ${{ secrets.SOURCE_REPO_TOKEN }}
+
           SOURCE_REPO: ${{ env.SOURCE_REPO }}
+
           SOURCE_REF: ${{ env.SOURCE_REF }}
+
           SOURCE_SHA: ${{ env.SOURCE_SHA }}
+
           ACTIVE_BUILD: ${{ steps.runtime_guard.outputs.active_build }}
+
         run: |
+
           set -euo pipefail
+
           title="CI: Linux build skipped because another build is active"
+
           body="/tmp/linux-build-skip.md"
+
           cat > "$body" <<EOF
+
           # Linux build skipped
+
           A new Linux build request was skipped because another Private Source Linux Build is already active.
+
           - Source ref: ${SOURCE_REF}
+
           - Source sha: ${SOURCE_SHA:-unknown}
+
           - Active build: ${ACTIVE_BUILD}
+
           - Skipped run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+
           - Time: $(date -u +%FT%TZ)
+
           Policy: keep one cloud UE Linux build at a time; do not cancel active compile/review runs.
+
           EOF
+
           issue="$(gh issue list -R "$SOURCE_REPO" --state open --search "$title in:title" --json number,title --jq '.[] | select(.title == "CI: Linux build skipped because another build is active") | .number' | head -n 1 || true)"
+
           if [[ -z "$issue" ]]; then
+
             gh issue create -R "$SOURCE_REPO" --title "$title" --body-file "$body" >/dev/null
+
           else
+
             gh issue comment "$issue" -R "$SOURCE_REPO" --body-file "$body" >/dev/null
+
           fi
+
       - name: Free hosted runner disk
+
         if: steps.runtime_guard.outputs.should_run == 'true'
+
         shell: bash
+
         run: |
+
           set -euo pipefail
+
           df -h
+
           sudo timeout 180s rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
+
           sudo timeout 120s docker system prune -af || true
+
           df -h
+
       - name: Login to GHCR
+
         if: steps.runtime_guard.outputs.should_run == 'true'
+
         uses: docker/login-action@v3
+
         with:
+
           registry: ghcr.io
+
           username: ${{ secrets.GHCR_USERNAME }}
+
           password: ${{ secrets.GHCR_TOKEN }}
+
       - name: Start UE image pull in background
+
         if: steps.runtime_guard.outputs.should_run == 'true'
+
         shell: bash
+
         run: |
+
           set -euo pipefail
+
           nohup bash -lc 'docker pull "$UE_IMAGE" > /tmp/ue-image-pull.log 2>&1' & echo $! > /tmp/ue-image-pull.pid
+
       - name: Checkout private source
+
         if: steps.runtime_guard.outputs.should_run == 'true'
+
         uses: actions/checkout@v4
+
         with:
+
           repository: ${{ env.SOURCE_REPO }}
+
           token: ${{ secrets.SOURCE_REPO_TOKEN }}
+
           ref: ${{ env.SOURCE_REF }}
+
           path: source
+
           lfs: false
+
           submodules: recursive
+
       - name: Record checked out source revision
+
         if: steps.runtime_guard.outputs.should_run == 'true'
+
         shell: bash
+
         run: |
+
           set -euo pipefail
+
           echo "Requested source ref: ${SOURCE_REF}"
+
           echo "Requested source sha: ${SOURCE_SHA:-<none>}"
+
           git -C source rev-parse HEAD
+
           if [[ -n "${SOURCE_SHA:-}" && "$(git -C source rev-parse HEAD)" != "${SOURCE_SHA}" ]]; then
+
             echo "Warning: checked out source HEAD does not match requested source sha" >&2
+
           fi
+
       - name: Prepare output directory
+
         if: steps.runtime_guard.outputs.should_run == 'true'
+
         shell: bash
+
         run: mkdir -p dist .sccache-cache .build-cache-restore .build-cache-restore
+
       - name: Normalize private source file mtimes for UBT incremental cache
+
         if: steps.runtime_guard.outputs.should_run == 'true'
+
         shell: bash
+
         working-directory: source
+
         run: |
+
           set -euo pipefail
+
           echo "Normalize tracked source mtimes to each file's last git commit time"
+
           git ls-files -z | while IFS= read -r -d '' file; do
+
             ts="$(git log -1 --format=%ct -- "$file" 2>/dev/null || true)"
+
             if [[ -n "$ts" ]]; then
+
               touch -d "@$ts" "$file" || true
+
             fi
+
           done
+
           stat MyProject.uproject Source/MyProject.Target.cs Source/MyProject/MyProject.Build.cs || true
+
       # Public actions/cache intentionally avoids private source build products.
+
       # Compiler/object caches live only in private release assets requiring ARTIFACT_REPO_TOKEN.
+
       - name: Restore sccache compiler cache from private builds repo
+
         if: steps.runtime_guard.outputs.should_run == 'true' && vars.ENABLE_SCCACHE == 'true'
+
         shell: bash
+
         env:
+
           GH_TOKEN: ${{ secrets.ARTIFACT_REPO_TOKEN }}
+
         run: |
+
           set -euo pipefail
+
           cache_tag="sccache-${{ runner.os }}"
+
           mkdir -p .sccache-cache .cache-restore
+
           if gh release download "$cache_tag" -R "$ARTIFACT_REPO" -p sccache-cache.tar.zst -D .cache-restore --clobber; then
-            if tar --zstd -tf .cache-restore/sccache-cache.tar.zst | grep -Eq '(^/|(^|/)\.\.(/|$))'; then
-              echo "Unsafe sccache cache archive paths; skipping restore"
-            else
-              tar --zstd --no-same-owner --no-same-permissions -xf .cache-restore/sccache-cache.tar.zst -C .sccache-cache || true
-              du -sh .sccache-cache || true
-            fi
+
+            python3 - <<'PY'
+            import sys, tarfile
+            archive = ".cache-restore/sccache-cache.tar.zst"
+            allowed = set()
+            safe_types = {tarfile.REGTYPE, tarfile.DIRTYPE}
+            with tarfile.open(archive, "r:zstd") as tf:
+                for member in tf.getmembers():
+                    if member.type not in safe_types:
+                        print(f"Rejected non-regular entry: {member.name!r} (type={member.type})", file=sys.stderr)
+                        sys.exit(1)
+                    name = member.name.rstrip("/")
+                    if not name or name.startswith("/") or ".." in name.split("/"):
+                        print(f"Rejected unsafe entry: {member.name!r}", file=sys.stderr)
+                        sys.exit(1)
+                    allowed.add(name)
+            print("sccache archive path validation passed")
+            PY
+
+            sudo tar --zstd --no-same-owner --no-same-permissions -xf .cache-restore/sccache-cache.tar.zst -C .sccache-cache || true
+
+            sudo chown -R "$USER:$USER" .sccache-cache || true
+
+            du -sh .sccache-cache || true
+
           else
+
             echo "No private sccache cache release yet: $cache_tag"
+
           fi
+
       - name: Restore UE build products cache from private builds repo
+
         if: steps.runtime_guard.outputs.should_run == 'true' && vars.ENABLE_UE_BUILD_PRODUCTS_CACHE == 'true' && (github.event_name != 'workflow_dispatch' || inputs.static_analysis != 'true')
+
         shell: bash
+
         continue-on-error: true
+
         env:
+
           GH_TOKEN: ${{ secrets.ARTIFACT_REPO_TOKEN }}
+
         run: |
+
           set -euo pipefail
+
           cache_tag="linux-build-cache-${{ runner.os }}"
+
           mkdir -p .build-cache-restore
+
           if gh release download "$cache_tag" -R "$ARTIFACT_REPO" -p ue-build-products.tar.zst -D .build-cache-restore --clobber; then
+
             echo "== restored UE cache archive =="
+
             ls -lh .build-cache-restore/ue-build-products.tar.zst || true
-            archive_entries="$(tar --zstd -tf .build-cache-restore/ue-build-products.tar.zst || true)"
-            if printf '%s\n' "$archive_entries" | grep -Eq '(^/|(^|/)\.\.(/|$))'; then
-              echo "Unsafe UE cache archive paths; skipping restore"
-            elif printf '%s\n' "$archive_entries" | grep -Ev '^(Binaries/|Intermediate/|Saved/UnrealBuildTool/|Plugins/[^/]+/(Binaries|Intermediate)/)' | grep -q .; then
-              echo "Unsafe UE cache archive paths; skipping restore"
-            else
-              tar --zstd --no-same-owner --no-same-permissions -xf .build-cache-restore/ue-build-products.tar.zst -C source || true
-            fi
+
+            python3 - <<'PY'
+            import sys, tarfile
+            archive = ".build-cache-restore/ue-build-products.tar.zst"
+            allowed_prefixes = (
+                "Binaries/", "Intermediate/", "Saved/",
+                "Plugins/Flow/Binaries/", "Plugins/Flow/Intermediate/",
+                "Plugins/YarnSpinner-Unreal-main/Binaries/", "Plugins/YarnSpinner-Unreal-main/Intermediate/",
+            )
+            safe_types = {tarfile.REGTYPE, tarfile.DIRTYPE}
+            with tarfile.open(archive, "r:zstd") as tf:
+                for member in tf.getmembers():
+                    if member.type not in safe_types:
+                        print(f"Rejected non-regular entry: {member.name!r} (type={member.type})", file=sys.stderr)
+                        sys.exit(1)
+                    name = member.name.rstrip("/")
+                    if not name or name.startswith("/") or ".." in name.split("/"):
+                        print(f"Rejected unsafe entry: {member.name!r}", file=sys.stderr)
+                        sys.exit(1)
+                    if not any(name.startswith(p) for p in allowed_prefixes):
+                        print(f"Rejected entry outside allowlist: {member.name!r}", file=sys.stderr)
+                        sys.exit(1)
+            print("UE build-products archive path validation passed")
+            PY
+
+            tar --zstd --no-same-owner --no-same-permissions -xf .build-cache-restore/ue-build-products.tar.zst -C source || true
+
             echo "== restored UE cache sizes =="
+
             du -sh source/Binaries source/Intermediate source/Saved/UnrealBuildTool source/Plugins/*/Binaries source/Plugins/*/Intermediate 2>/dev/null || true
+
             echo "== restored UE object files =="
+
             find source -name '*.o' -type f | tee dist/restored-object-files.txt | wc -l || true
+
             find source -name '*.gch' -o -name '*.d' | tee dist/restored-pch-dep-files.txt | wc -l || true
+
             ls -l source/Plugins/Flow/Intermediate/Build/Linux/x64/UnrealGame/Development/Flow/FlowPinType.cpp.o source/Plugins/YarnSpinner-Unreal-main/Intermediate/Build/Linux/x64/UnrealGame/Development/YarnSpinner/Module.YarnSpinner.7.cpp.o 2>/dev/null || true
+
             echo "== restored UE cache oldest/newest before mtime fix =="
+
             stat source/MyProject.uproject || true
+
             find source/Intermediate source/Binaries source/Saved/UnrealBuildTool source/Plugins -type f 2>/dev/null | head -2000 | xargs -r stat -c '%Y %n' 2>/dev/null | sort -n | { head -10; tail -10; } || true
+
             echo "== restored UE cache newest after extract =="
+
             find source/Intermediate source/Binaries source/Saved/UnrealBuildTool source/Plugins -type f 2>/dev/null | head -2000 | xargs -r stat -c '%Y %n' 2>/dev/null | sort -n | tail -20 || true
+
           else
+
             echo "No private UE build-products cache release yet: $cache_tag"
+
           fi
+
       - name: Initialize CodeQL for advanced review
+
         if: steps.runtime_guard.outputs.should_run == 'true' && github.event_name == 'workflow_dispatch' && inputs.static_analysis == 'true'
+
         uses: github/codeql-action/init@v4
+
         with:
+
           languages: cpp
+
           source-root: source
+
           build-mode: manual
+
           queries: security-and-quality
+
       - name: Build Linux target in official UE container
+
         if: steps.runtime_guard.outputs.should_run == 'true'
+
         id: build
+
         shell: bash
+
         continue-on-error: true
+
         run: |
+
           set -euo pipefail
+
           if [[ -f /tmp/ue-image-pull.pid ]]; then
+
             pull_pid="$(cat /tmp/ue-image-pull.pid)"
+
             while kill -0 "$pull_pid" 2>/dev/null; do sleep 5; done
+
             cat /tmp/ue-image-pull.log || true
+
             docker image inspect "$UE_IMAGE" >/dev/null 2>&1 || docker pull "$UE_IMAGE"
+
           else
+
             docker pull "$UE_IMAGE"
+
           fi
+
           docker image ls "$UE_IMAGE"
+
           df -h
+
           env | grep -E '^(CODEQL_|SEMMLE_|LD_PRELOAD=)' > /tmp/codeql-docker.env || true
+
           HOST_SOURCE="$PWD/source"
           HOST_DIST="$PWD/dist"
+
           docker run --rm --user root \
             --env-file /tmp/codeql-docker.env \
             -v /opt/hostedtoolcache/CodeQL:/opt/hostedtoolcache/CodeQL:ro \
@@ -244,37 +481,61 @@ jobs:
             -e TARGET_NAME="$TARGET_NAME" \
             -e GITHUB_RUN_NUMBER="$GITHUB_RUN_NUMBER" \
             -e ENABLE_SCCACHE="${{ vars.ENABLE_SCCACHE }}" \
-            -e STATIC_ANALYSIS="${{ inputs.static_analysis }}" \
             -v "$HOST_SOURCE:$HOST_SOURCE" \
             -v "$HOST_DIST:$HOST_DIST" \
             -v "$PWD/.sccache-cache:/workspace/.sccache-cache" \
             -w "$HOST_SOURCE" \
             "$UE_IMAGE" \
             bash -lc '
+
               set -o pipefail
+
               mkdir -p ../dist
+
               if ! command -v zstd >/dev/null 2>&1; then apt-get update && apt-get install -y zstd; fi
+
               if [[ ! -x /opt/sccache/sccache ]]; then
+
                 curl -L https://github.com/mozilla/sccache/releases/download/v0.15.0/sccache-v0.15.0-x86_64-unknown-linux-musl.tar.gz -o /tmp/sccache.tar.gz
+
                 tar -xzf /tmp/sccache.tar.gz -C /tmp
+
                 mkdir -p /opt/sccache
+
                 install /tmp/sccache-v0.15.0-x86_64-unknown-linux-musl/sccache /opt/sccache/sccache
+
               fi
+
               if [[ ! -x /home/ue4/UnrealEngine/Engine/Source/ThirdParty/Intel/ISPC/bin/Linux/ispc ]]; then
+
                 ispc_version="v1.30.0"
+
                 curl -fsSL "https://github.com/ispc/ispc/releases/download/${ispc_version}/ispc-${ispc_version}-linux.tar.gz" -o /tmp/ispc.tar.gz
+
                 tar -xzf /tmp/ispc.tar.gz -C /tmp
+
                 mkdir -p /home/ue4/UnrealEngine/Engine/Source/ThirdParty/Intel/ISPC/bin/Linux
+
                 install -m 755 "/tmp/ispc-${ispc_version}-linux/bin/ispc" /home/ue4/UnrealEngine/Engine/Source/ThirdParty/Intel/ISPC/bin/Linux/ispc
+
               fi
+
               # UBT tracks tool mtimes; normalize generated/installed tools so fresh containers do not invalidate makefiles.
+
               touch -d "2000-01-01 00:00:00 UTC" /home/ue4/UnrealEngine/Engine/Source/ThirdParty/Intel/ISPC/bin/Linux/ispc || true
+
               if ! command -v flatc >/dev/null 2>&1; then apt-get update && apt-get install -y flatbuffers-compiler; fi
+
               mkdir -p Plugins/FlatBuffers/Tools/flatc Plugins/FlatBuffers/Tools/include
+
               install -m 755 "$(command -v flatc)" Plugins/FlatBuffers/Tools/flatc/flatc || true
+
               install -m 755 "$(command -v flatc)" Plugins/FlatBuffers/Tools/flatc/flatc.exe || true
+
               touch -d "2000-01-01 00:00:00 UTC" Plugins/FlatBuffers/Tools/flatc/flatc Plugins/FlatBuffers/Tools/flatc/flatc.exe || true
+
               mkdir -p "/home/ue4/.config/Unreal Engine/UnrealBuildTool" "/home/ue4/.config/Epic/UnrealBuildTool"
+
               printf "%s\n" \
                 "<?xml version=\"1.0\" encoding=\"utf-8\"?>" \
                 "<Configuration xmlns=\"https://www.unrealengine.com/BuildConfiguration\">" \
@@ -285,463 +546,780 @@ jobs:
                 "    <bAdaptiveUnityDisablesPCH>true</bAdaptiveUnityDisablesPCH>" \
                 "  </BuildConfiguration>" \
                 "</Configuration>" > /tmp/BuildConfiguration.xml
+
               cp /tmp/BuildConfiguration.xml "/home/ue4/.config/Unreal Engine/UnrealBuildTool/BuildConfiguration.xml"
+
               cp /tmp/BuildConfiguration.xml "/home/ue4/.config/Epic/UnrealBuildTool/BuildConfiguration.xml"
+
               # Fresh CI containers recreate BuildConfiguration.xml every run; UBT treats that as makefile-invalidating.
+
               # Keep config content deterministic but timestamp old so restored Intermediate can remain incremental.
+
               touch -d "2000-01-01 00:00:00 UTC" "/home/ue4/.config/Unreal Engine/UnrealBuildTool/BuildConfiguration.xml" "/home/ue4/.config/Epic/UnrealBuildTool/BuildConfiguration.xml" || true
+
               if [[ "${ENABLE_SCCACHE:-false}" == "true" ]]; then
+
                 export SCCACHE_DIR=/workspace/.sccache-cache SCCACHE_CACHE_SIZE=8G SCCACHE_BASEDIRS="$PWD" SCCACHE_IGNORE_SERVER_IO_ERROR=1
+
               printf "%s" "IyEvdXNyL2Jpbi9lbnYgcHl0aG9uMwppbXBvcnQgb3MsIHNobGV4LCBzeXMKCmRlZiBleHBhbmRfYXJncyhhcmdzLCBzZWVuPU5vbmUpOgogICAgaWYgc2VlbiBpcyBOb25lOgogICAgICAgIHNlZW4gPSBzZXQoKQogICAgb3V0ID0gW10KICAgIGZvciBhcmcgaW4gYXJnczoKICAgICAgICBpZiBhcmcuc3RhcnRzd2l0aCgnQCcpIGFuZCBsZW4oYXJnKSA+IDE6CiAgICAgICAgICAgIHJzcCA9IGFyZ1sxOl0uc3RyaXAoJyInKS5zdHJpcCgiJyIpCiAgICAgICAgICAgIHJzcF9hYnMgPSBvcy5wYXRoLmFic3BhdGgocnNwKQogICAgICAgICAgICBpZiByc3BfYWJzIG5vdCBpbiBzZWVuOgogICAgICAgICAgICAgICAgdHJ5OgogICAgICAgICAgICAgICAgICAgIHNlZW4uYWRkKHJzcF9hYnMpCiAgICAgICAgICAgICAgICAgICAgd2l0aCBvcGVuKHJzcCwgJ3InLCBlbmNvZGluZz0ndXRmLTgnKSBhcyBmaDoKICAgICAgICAgICAgICAgICAgICAgICAgb3V0LmV4dGVuZChleHBhbmRfYXJncyhzaGxleC5zcGxpdChmaC5yZWFkKCksIHBvc2l4PVRydWUpLCBzZWVuKSkKICAgICAgICAgICAgICAgICAgICBjb250aW51ZQogICAgICAgICAgICAgICAgZXhjZXB0IEV4Y2VwdGlvbjoKICAgICAgICAgICAgICAgICAgICBwYXNzCiAgICAgICAgb3V0LmFwcGVuZChhcmcpCiAgICByZXR1cm4gb3V0Cgpvcy5leGVjdignL29wdC9zY2NhY2hlL3NjY2FjaGUnLCBbJ3NjY2FjaGUnXSArIGV4cGFuZF9hcmdzKHN5cy5hcmd2WzE6XSkp" | base64 -d > /usr/local/bin/sccache-rsp-wrapper
+
               chmod +x /usr/local/bin/sccache-rsp-wrapper
+
               unset UE_SCCACHE_EXECUTABLE CCACHE_EXEC
+
               clangxx_path="$(find /home/ue4/UnrealEngine/Engine/Extras/ThirdPartyNotUE/SDKs/HostLinux -path "*/x86_64-unknown-linux-gnu/bin/clang++" | head -n 1 || true)"
+
               echo "sccache clang++ candidate: ${clangxx_path:-<none>}"
+
               if [[ -n "$clangxx_path" ]]; then
+
                 toolchain_bin="$(dirname "$clangxx_path")"
+
                 for compiler in clang clang++; do
+
                   if [[ -e "$toolchain_bin/$compiler" && ! -e "$toolchain_bin/$compiler.real" ]]; then
+
                     mv "$toolchain_bin/$compiler" "$toolchain_bin/$compiler.real"
+
                     printf "%s" "IyEvdXNyL2Jpbi9lbnYgcHl0aG9uMwppbXBvcnQgb3MsIHNobGV4LCBzeXMKcmVhbCA9IHN5cy5hcmd2WzBdICsgJy5yZWFsJwoKZGVmIGV4cGFuZF9hcmdzKGFyZ3MsIHNlZW49Tm9uZSk6CiAgICBpZiBzZWVuIGlzIE5vbmU6CiAgICAgICAgc2VlbiA9IHNldCgpCiAgICBvdXQgPSBbXQogICAgZm9yIGFyZyBpbiBhcmdzOgogICAgICAgIGlmIGFyZy5zdGFydHN3aXRoKCdAJykgYW5kIGxlbihhcmcpID4gMToKICAgICAgICAgICAgcnNwID0gYXJnWzE6XS5zdHJpcCgnIicpLnN0cmlwKCInIikKICAgICAgICAgICAgcnNwX2FicyA9IG9zLnBhdGguYWJzcGF0aChyc3ApCiAgICAgICAgICAgIGlmIHJzcF9hYnMgbm90IGluIHNlZW46CiAgICAgICAgICAgICAgICB0cnk6CiAgICAgICAgICAgICAgICAgICAgc2Vlbi5hZGQocnNwX2FicykKICAgICAgICAgICAgICAgICAgICB3aXRoIG9wZW4ocnNwLCAncicsIGVuY29kaW5nPSd1dGYtOCcpIGFzIGZoOgogICAgICAgICAgICAgICAgICAgICAgICBvdXQuZXh0ZW5kKGV4cGFuZF9hcmdzKHNobGV4LnNwbGl0KGZoLnJlYWQoKSwgcG9zaXg9VHJ1ZSksIHNlZW4pKQogICAgICAgICAgICAgICAgICAgIGNvbnRpbnVlCiAgICAgICAgICAgICAgICBleGNlcHQgRXhjZXB0aW9uOgogICAgICAgICAgICAgICAgICAgIHBhc3MKICAgICAgICBvdXQuYXBwZW5kKGFyZykKICAgIHJldHVybiBvdXQKCmV4cGFuZGVkID0gZXhwYW5kX2FyZ3Moc3lzLmFyZ3ZbMTpdKQppZiBhbnkoYS5zdGFydHN3aXRoKCdAJykgZm9yIGEgaW4gZXhwYW5kZWQpOgogICAgcHJpbnQoJ3NjY2FjaGUgd3JhcHBlciB3YXJuaW5nOiB1bmV4cGFuZGVkIHJlc3BvbnNlIGFyZyByZW1haW5zJywgZmlsZT1zeXMuc3RkZXJyKQpvcy5leGVjdignL29wdC9zY2NhY2hlL3NjY2FjaGUnLCBbJ3NjY2FjaGUnLCByZWFsXSArIGV4cGFuZGVkKQ==" | base64 -d > "$toolchain_bin/$compiler"
+
                     chmod +x "$toolchain_bin/$compiler"
+
                     touch -d "2000-01-01 00:00:00 UTC" "$toolchain_bin/$compiler" || true
+
                     echo "wrapped $toolchain_bin/$compiler -> /opt/sccache/sccache with recursive rsp expansion"
+
                   fi
+
                 done
+
               fi
+
               /opt/sccache/sccache --stop-server || true
+
               /opt/sccache/sccache --start-server || true
+
               else
+
                 echo "sccache disabled for validation build"
+
               fi
+
               set +e
+
               build_cmd=(/home/ue4/UnrealEngine/Engine/Build/BatchFiles/Linux/Build.sh "$TARGET_NAME" Linux Development "$PWD/$PROJECT_FILE" -WaitMutex -NoHotReload -NoUBA -MaxParallelActions=4 -VeryVerbose)
-              if [[ "${STATIC_ANALYSIS:-false}" == "true" ]]; then
-                echo "Advanced analysis: running native UE build for CodeQL capture"
-              fi
               "${build_cmd[@]}" 2>&1 | tee ../dist/build.log
+
               code=${PIPESTATUS[0]}
+
               set -e
+
               if grep -q "Result: Failed" ../dist/build.log; then code=1; fi
+
               /opt/sccache/sccache --show-stats > ../dist/sccache-stats.txt 2>&1 || true
+
               du -sh "$SCCACHE_DIR" >> ../dist/sccache-stats.txt 2>&1 || true
+
               cp /home/ue4/.config/Epic/UnrealBuildTool/Log.txt ../dist/ubt.log 2>/dev/null || true
+
               find Intermediate -type f \( -name "*.log" -o -name "*.txt" -o -name "*.err" -o -name "*.response" -o -name "*.rsp" \) -print > ../dist/intermediate-diagnostics-files.txt 2>/dev/null || true
+
               tar -czf ../dist/intermediate-diagnostics.tar.gz -T ../dist/intermediate-diagnostics-files.txt 2>/dev/null || true
+
               : > ../dist/package-files.txt
+
               for path in Binaries Saved Intermediate/Build Plugins; do
+
                 [[ -e "$path" ]] || continue
+
                 if [[ "$path" == "Plugins" ]]; then
+
                   find Plugins -type f \( -path '*/Binaries/*' -o -path '*/Intermediate/*' \) -print >> ../dist/package-files.txt
+
                 else
+
                   find "$path" -type f -print >> ../dist/package-files.txt
+
                 fi
+
               done
+
               if [[ -s ../dist/package-files.txt ]]; then
+
                 tar -czf "../dist/MyProject-Linux-${GITHUB_RUN_NUMBER:-0}.tar.gz" -T ../dist/package-files.txt
+
               fi
+
               [[ -n "${code:-}" ]] || code=0
+
               printf "%s\n" "$code" > ../dist/build-exit-code.txt
+
               exit 0
+
             '
+
           code="$(cat dist/build-exit-code.txt 2>/dev/null || true)"
+
           if [[ -z "$code" ]]; then
+
             if grep -q "Result: Failed" dist/build.log 2>/dev/null; then code=1; else code=0; fi
+
             printf "%s\n" "$code" > dist/build-exit-code.txt
+
           fi
+
           echo "exit_code=$code" >> "$GITHUB_OUTPUT"
-      - name: Fix CodeQL database permissions after container build
-        if: steps.runtime_guard.outputs.should_run == 'true' && github.event_name == 'workflow_dispatch' && inputs.static_analysis == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          sudo chown -R "$USER:$USER" "$RUNNER_TEMP/codeql_databases" "$RUNNER_TEMP/trapCaches" 2>/dev/null || true
-          find "$RUNNER_TEMP/codeql_databases" "$RUNNER_TEMP/trapCaches" -maxdepth 3 -type d -exec chmod u+rwx {} + 2>/dev/null || true
 
       - name: Run CodeQL advanced analysis
+
         if: steps.runtime_guard.outputs.should_run == 'true' && github.event_name == 'workflow_dispatch' && inputs.static_analysis == 'true'
+
         uses: github/codeql-action/analyze@v4
+
         with:
+
           upload: false
+
           output: dist/codeql-sarif
+
           category: private-source-advanced
-      - name: Report CodeQL findings to private source issue
-        if: steps.runtime_guard.outputs.should_run == 'true' && github.event_name == 'workflow_dispatch' && inputs.static_analysis == 'true' && always()
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.SOURCE_REPO_TOKEN }}
-          SOURCE_REPO: ${{ env.SOURCE_REPO }}
-          SOURCE_REF: ${{ env.SOURCE_REF }}
-          SOURCE_SHA: ${{ env.SOURCE_SHA }}
-        run: |
-          set -euo pipefail
-          title="CI: Static review result"
-          body="/tmp/static-review-result.md"
-          run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-          export run_url
-          python3 - <<'PY' > "$body"
-          import html
-          import json
-          import os
-          import pathlib
-          import sys
-
-          run_url = os.environ.get("run_url", "")
-          source_repo = os.environ.get("SOURCE_REPO", "")
-          source_ref = os.environ.get("SOURCE_REF", "")
-          source_sha = os.environ.get("SOURCE_SHA") or "unknown"
-          sarif_root = pathlib.Path("dist/codeql-sarif")
-          sarif_files = sorted(sarif_root.rglob("*.sarif")) + sorted(sarif_root.rglob("*.sarif.json"))
-          findings = []
-          sarif_names = []
-
-          for sarif_file in sarif_files:
-              sarif_names.append(str(sarif_file))
-              try:
-                  data = json.loads(sarif_file.read_text(encoding="utf-8"))
-              except Exception as exc:
-                  findings.append({"rule": "sarif-parse-error", "severity": "error", "path": str(sarif_file), "line": "", "message": str(exc)})
-                  continue
-              for run in data.get("runs", []):
-                  rules = {}
-                  for rule in run.get("tool", {}).get("driver", {}).get("rules", []):
-                      rid = rule.get("id") or rule.get("name") or "unknown-rule"
-                      props = rule.get("properties", {})
-                      rules[rid] = {
-                          "name": rule.get("shortDescription", {}).get("text") or rule.get("name") or rid,
-                          "severity": props.get("security-severity") or props.get("problem.severity") or props.get("precision") or "warning",
-                      }
-                  for result in run.get("results", []):
-                      rid = result.get("ruleId") or "unknown-rule"
-                      rule = rules.get(rid, {"name": rid, "severity": "warning"})
-                      loc = (result.get("locations") or [{}])[0].get("physicalLocation", {})
-                      artifact = loc.get("artifactLocation", {})
-                      region = loc.get("region", {})
-                      msg = result.get("message", {}).get("text") or ""
-                      findings.append({
-                          "rule": rid,
-                          "name": rule["name"],
-                          "severity": str(rule["severity"]),
-                          "path": artifact.get("uri") or "",
-                          "line": region.get("startLine") or "",
-                          "message": msg.replace("\r", " ").replace("\n", " ").strip(),
-                      })
-
-          findings.sort(key=lambda f: (str(f.get("severity", "")), str(f.get("path", "")), str(f.get("line", "")), str(f.get("rule", ""))))
-          print("# Static review result")
-          print(f"- Source repo: {source_repo}")
-          print(f"- Source ref: {source_ref}")
-          print(f"- Source sha: {source_sha}")
-          print(f"- Public run: {run_url}")
-          print(f"- CodeQL SARIF files: {len(sarif_names)}")
-          print(f"- CodeQL findings: {len(findings)}")
-          print("")
-          print("## CodeQL findings")
-          if not sarif_names:
-              print("No CodeQL SARIF files found under `dist/codeql-sarif`.")
-          elif not findings:
-              print("No CodeQL findings.")
-          else:
-              limit = 200
-              print("| # | Severity | Rule | Location | Message |")
-              print("|---:|---|---|---|---|")
-              for idx, f in enumerate(findings[:limit], 1):
-                  path = f.get("path") or ""
-                  line = f.get("line") or ""
-                  loc = f"`{path}:{line}`" if line else f"`{path}`"
-                  rule = f"`{f.get('rule','')}` {f.get('name','')}".strip()
-                  msg = (f.get("message") or "")[:300]
-                  print(f"| {idx} | {html.escape(str(f.get('severity','')))} | {html.escape(rule)} | {loc} | {html.escape(msg)} |")
-              if len(findings) > limit:
-                  print(f"\n_Truncated to first {limit} findings._")
-          print("\n## SARIF files")
-          for name in sarif_names[:20]:
-              print(f"- `{name}`")
-          PY
-          issue="$(gh issue list -R "$SOURCE_REPO" --state all --search "$title in:title" --json number,title --jq '.[] | select(.title == "CI: Static review result") | .number' | head -n 1 || true)"
-          if [[ -z "$issue" ]]; then
-            gh issue create -R "$SOURCE_REPO" --title "$title" --body-file "$body" >/dev/null
-          else
-            gh issue edit "$issue" -R "$SOURCE_REPO" --body-file "$body" >/dev/null
-            gh issue reopen "$issue" -R "$SOURCE_REPO" >/dev/null 2>&1 || true
-          fi
-      - name: Fail job if CodeQL review failed
-        if: steps.runtime_guard.outputs.should_run == 'true' && github.event_name == 'workflow_dispatch' && inputs.static_analysis == 'true' && always()
-        shell: bash
-        run: |
-          test -d dist/codeql-sarif
 
       - name: Save sccache compiler cache to private builds repo
+
         if: steps.runtime_guard.outputs.should_run == 'true' && vars.ENABLE_SCCACHE == 'true' && always()
+
         continue-on-error: true
+
         shell: bash
+
         env:
+
           GH_TOKEN: ${{ secrets.ARTIFACT_REPO_TOKEN }}
+
         run: |
+
           set -euo pipefail
+
           cache_tag="sccache-${{ runner.os }}"
+
           mkdir -p dist
+
           du -sh .sccache-cache > dist/sccache-cache-size.txt 2>&1 || true
+
           sudo tar --zstd -cf dist/sccache-cache.tar.zst -C .sccache-cache . || true
+
           sudo chown "$USER:$USER" dist/sccache-cache.tar.zst 2>/dev/null || true
+
           if [[ -s dist/sccache-cache.tar.zst ]]; then
-            gh release view "$cache_tag" -R "$ARTIFACT_REPO" >/dev/null 2>&1 || gh release create "$cache_tag" -R "$ARTIFACT_REPO" --title "$cache_tag compiler cache" --notes "Rolling sccache compiler cache for Linux CI" --latest=false
-            gh release edit "$cache_tag" -R "$ARTIFACT_REPO" --title "$cache_tag compiler cache" --notes "Rolling sccache compiler cache for Linux CI" --latest=false
+
+            if ! gh release view "$cache_tag" -R "$ARTIFACT_REPO" >/dev/null 2>&1; then
+              gh release create "$cache_tag" -R "$ARTIFACT_REPO" --title "$cache_tag compiler cache" --notes "Rolling sccache compiler cache for Linux CI" --latest=false
+            fi
+
             gh release upload "$cache_tag" -R "$ARTIFACT_REPO" dist/sccache-cache.tar.zst dist/sccache-cache-size.txt --clobber
+
           fi
+
       - name: Save UE build products cache to private builds repo
+
         if: steps.runtime_guard.outputs.should_run == 'true' && vars.ENABLE_UE_BUILD_PRODUCTS_CACHE == 'true' && always()
+
         continue-on-error: true
+
         shell: bash
+
         env:
+
           GH_TOKEN: ${{ secrets.ARTIFACT_REPO_TOKEN }}
+
         run: |
+
           set -euo pipefail
+
           cache_tag="linux-build-cache-${{ runner.os }}"
+
           mkdir -p dist
+
           (
+
             cd source
+
             : > ../dist/ue-build-products-files.txt
+
             for path in Binaries Intermediate Saved/UnrealBuildTool Plugins; do
+
               [[ -e "$path" ]] || continue
+
               if [[ "$path" == "Plugins" ]]; then
+
                 find Plugins -type f \( -path '*/Binaries/*' -o -path '*/Intermediate/*' \) -print >> ../dist/ue-build-products-files.txt
+
               else
+
                 find "$path" -type f -print >> ../dist/ue-build-products-files.txt
+
               fi
+
             done
+
             echo "object_count=$(grep -c '\.o$' ../dist/ue-build-products-files.txt || true)" > ../dist/ue-build-products-size.txt
+
             echo "file_count=$(wc -l < ../dist/ue-build-products-files.txt)" >> ../dist/ue-build-products-size.txt
+
             grep '\.o$' ../dist/ue-build-products-files.txt | head -50 > ../dist/ue-build-products-object-sample.txt || true
+
             sudo tar --zstd -cf ../dist/ue-build-products.tar.zst -T ../dist/ue-build-products-files.txt 2>/dev/null || true
+
           )
+
           sudo chown "$USER:$USER" dist/ue-build-products.tar.zst 2>/dev/null || true
+
           du -sh dist/ue-build-products.tar.zst >> dist/ue-build-products-size.txt 2>&1 || true
+
           if [[ -s dist/ue-build-products.tar.zst ]]; then
-            gh release view "$cache_tag" -R "$ARTIFACT_REPO" >/dev/null 2>&1 || gh release create "$cache_tag" -R "$ARTIFACT_REPO" --title "$cache_tag UE build products" --notes "Rolling UE Binaries/Intermediate cache for Linux CI" --latest=false
-            gh release edit "$cache_tag" -R "$ARTIFACT_REPO" --title "$cache_tag UE build products" --notes "Rolling UE Binaries/Intermediate cache for Linux CI" --latest=false
+
+            if ! gh release view "$cache_tag" -R "$ARTIFACT_REPO" >/dev/null 2>&1; then
+              gh release create "$cache_tag" -R "$ARTIFACT_REPO" --title "$cache_tag UE build products" --notes "Rolling UE Binaries/Intermediate cache for Linux CI" --latest=false
+            fi
+
             gh release upload "$cache_tag" -R "$ARTIFACT_REPO" dist/ue-build-products.tar.zst dist/ue-build-products-size.txt dist/ue-build-products-files.txt dist/ue-build-products-object-sample.txt --clobber
+
           fi
+
       - name: Write manifest
+
         if: steps.runtime_guard.outputs.should_run == 'true' && always()
+
         shell: bash
+
         run: |
+
           set -euo pipefail
+
           mkdir -p dist
+
           sudo chown -R "$USER:$USER" dist 2>/dev/null || true
+
           chmod -R u+rwX dist 2>/dev/null || true
+
           build_exit_code="${{ steps.build.outputs.exit_code }}"
+
           [[ -n "$build_exit_code" ]] || build_exit_code="$(cat dist/build-exit-code.txt 2>/dev/null || true)"
+
           [[ -n "$build_exit_code" ]] || build_exit_code=1
+
           printf "%s\n" "$build_exit_code" > dist/build-exit-code.txt
+
           BUILD_EXIT_CODE="$build_exit_code" python3 -c 'import json, os; json.dump({"sourceRepo": os.environ["SOURCE_REPO"], "sourceRef": os.environ.get("SOURCE_REF", ""), "sourceSha": os.environ.get("SOURCE_SHA", ""), "runId": os.environ["GITHUB_RUN_ID"], "runNumber": os.environ["GITHUB_RUN_NUMBER"], "target": os.environ["TARGET_NAME"], "platform": "Linux", "configuration": "Development", "buildExitCode": os.environ["BUILD_EXIT_CODE"]}, open("dist/manifest.json", "w", encoding="utf-8"), indent=2)'
+
       - name: Drop empty artifacts
+
         if: steps.runtime_guard.outputs.should_run == 'true' && always()
+
         shell: bash
+
         run: find dist -type f -size 0 -delete 2>/dev/null || true
+
       - name: Publish private release with logs
+
         if: steps.runtime_guard.outputs.should_run == 'true' && always()
+
         shell: bash
+
         env:
+
           GH_TOKEN: ${{ secrets.ARTIFACT_REPO_TOKEN }}
+
         run: |
+
           set -euo pipefail
-          tag="linux-current"
+
+          tag="linux-${GITHUB_RUN_NUMBER}"
+
           body_file="dist/release-body.md"
+
           cat > "$body_file" <<EOF
+
           Source: ${SOURCE_REPO}
+
           Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+
           Build exit code: ${{ steps.build.outputs.exit_code }}
+
           EOF
-          gh release view "$tag" -R "$ARTIFACT_REPO" >/dev/null 2>&1 || gh release create "$tag" -R "$ARTIFACT_REPO" --title "Linux build current" --notes-file "$body_file" --latest=false
-          gh release edit "$tag" -R "$ARTIFACT_REPO" --title "Linux build current" --notes-file "$body_file" --latest=false
+
+          if ! gh release view "$tag" -R "$ARTIFACT_REPO" >/dev/null 2>&1; then
+            gh release create "$tag" -R "$ARTIFACT_REPO" --title "Linux build ${GITHUB_RUN_NUMBER}" --notes-file "$body_file" --latest=false
+          fi
+
           files=(
+
             dist/MyProject-Linux-*.tar.gz
+
             dist/manifest.json
+
             dist/build.log
+
             dist/sccache-stats.txt
+
             dist/build-exit-code.txt
+
             dist/ubt.log
+
             dist/intermediate-diagnostics-files.txt
+
             dist/intermediate-diagnostics.tar.gz
-            dist/compile-commands-generation.log
+
           )
+
           for file in "${files[@]}"; do
+
             [[ -f "$file" && -s "$file" ]] || continue
+
             for attempt in 1 2 3; do
+
               if gh release upload "$tag" -R "$ARTIFACT_REPO" "$file" --clobber; then
+
                 break
+
               fi
+
               if [[ "$attempt" == "3" ]]; then
+
                 exit 1
+
               fi
+
               sleep $((attempt * 10))
+
             done
+
           done
-      - name: Report Linux build failure to private source issues
-        if: steps.runtime_guard.outputs.should_run == 'true' && always() && steps.build.outputs.exit_code != '0'
+
+      - name: Prune old linux-build releases
+
+        if: steps.runtime_guard.outputs.should_run == 'true' && always()
+
         shell: bash
+
         env:
-          GH_TOKEN: ${{ secrets.SOURCE_REPO_TOKEN }}
-          SOURCE_REPO: ${{ env.SOURCE_REPO }}
-          SOURCE_REF: ${{ env.SOURCE_REF }}
-          SOURCE_SHA: ${{ env.SOURCE_SHA }}
-          BUILD_EXIT_CODE: ${{ steps.build.outputs.exit_code }}
-        run: |
-          set -euo pipefail
-          title="CI: Linux build failed"
-          body="/tmp/linux-build-failure.md"
-          release_url="https://github.com/${ARTIFACT_REPO}/releases/tag/linux-current"
-          tail_file="/tmp/build-log-tail.txt"
-          if [[ -f dist/build.log ]]; then
-            tail -n 160 dist/build.log > "$tail_file" || true
-          else
-            echo "dist/build.log missing" > "$tail_file"
-          fi
-          cat > "$body" <<EOF
-          # Linux build failed
-          - Source repo: ${SOURCE_REPO}
-          - Source ref: ${SOURCE_REF}
-          - Source sha: ${SOURCE_SHA:-unknown}
-          - Public run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
-          - Private release/logs: ${release_url}
-          - Build exit code: ${BUILD_EXIT_CODE:-unknown}
-          - Time: $(date -u +%FT%TZ)
-          ## Build log tail
-          \`\`\`text
-          $(cat "$tail_file")
-          \`\`\`
-          EOF
-          issue="$(gh issue list -R "$SOURCE_REPO" --state all --search "$title in:title" --json number,title --jq '.[] | select(.title == "CI: Linux build failed") | .number' | head -n 1 || true)"
-          if [[ -z "$issue" ]]; then
-            gh issue create -R "$SOURCE_REPO" --title "$title" --body-file "$body" >/dev/null
-          else
-            gh issue edit "$issue" -R "$SOURCE_REPO" --body-file "$body" >/dev/null
-            gh issue reopen "$issue" -R "$SOURCE_REPO" >/dev/null 2>&1 || true
-          fi
-      - name: Fail job if build failed
-        if: steps.runtime_guard.outputs.should_run == 'true' && steps.build.outputs.exit_code != '0'
-        shell: bash
-        run: exit 1
-  static-analysis:
-    name: Weekly CodeQL private report
-    needs: build-linux
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    if: false
-    env:
-      ANALYSIS_TAG: static-analysis-current
-      REPORT_DIR: analysis-report
-    steps:
-      - name: Checkout private source
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ env.SOURCE_REPO }}
-          token: ${{ secrets.SOURCE_REPO_TOKEN }}
-          fetch-depth: 0
-          lfs: true
-          submodules: recursive
-          path: source
-          persist-credentials: false
-      - name: Prepare report directory
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p "$REPORT_DIR"
-          git -C source rev-parse HEAD > "$REPORT_DIR/source-sha.txt"
-      - name: Summarize CodeQL SARIF
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          import json, pathlib, collections
-          sarif_files = sorted(pathlib.Path('analysis-report/codeql-sarif').glob('*.sarif'))
-          sarif = sarif_files[0] if sarif_files else pathlib.Path('analysis-report/codeql-results.sarif')
-          out = pathlib.Path('analysis-report/codeql-summary.md')
-          data = json.loads(sarif.read_text(encoding='utf-8')) if sarif.exists() else {}
-          if sarif.exists():
-              pathlib.Path('analysis-report/codeql-results.sarif').write_text(sarif.read_text(encoding='utf-8'), encoding='utf-8')
-          runs = data.get('runs', [])
-          results = []
-          rules = {}
-          for run in runs:
-              tool = run.get('tool', {}).get('driver', {})
-              for rule in tool.get('rules', []) or []:
-                  rid = rule.get('id')
-                  if rid:
-                      rules[rid] = rule.get('shortDescription', {}).get('text') or rule.get('name') or rid
-              results.extend(run.get('results', []) or [])
-          counts = collections.Counter(r.get('level', 'warning') for r in results)
-          lines = [
-              '# Weekly Static Analysis', '',
-              f'- CodeQL findings: {len(results)}',
-              f'- Error: {counts.get("error", 0)}',
-              f'- Warning: {counts.get("warning", 0)}',
-              f'- Note: {counts.get("note", 0)}', '',
-              '## Top findings', ''
-          ]
-          for r in results[:25]:
-              rid = r.get('ruleId', '<unknown>')
-              msg = r.get('message', {}).get('text', '').replace('\n', ' ')[:240]
-              loc = ''
-              try:
-                  ploc = r['locations'][0]['physicalLocation']
-                  uri = ploc['artifactLocation'].get('uri','')
-                  line = ploc.get('region',{}).get('startLine','')
-                  loc = f' `{uri}:{line}`'
-              except Exception:
-                  pass
-              lines.append(f'- `{rid}` {rules.get(rid, rid)}{loc}: {msg}')
-          out.write_text('\n'.join(lines) + '\n', encoding='utf-8')
-          pathlib.Path('analysis-report/codeql-count.txt').write_text(str(len(results)), encoding='utf-8')
-          PY
-      - name: Publish SARIF release to private builds repo
-        shell: bash
-        env:
+
           GH_TOKEN: ${{ secrets.ARTIFACT_REPO_TOKEN }}
+
         run: |
+
           set -euo pipefail
-          analysis_notes="Weekly static analysis for $SOURCE_REPO at $(cat $REPORT_DIR/source-sha.txt). Public run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
-          gh release view "$ANALYSIS_TAG" -R "$ARTIFACT_REPO" >/dev/null 2>&1 || gh release create "$ANALYSIS_TAG" \
+
+          gh release list -R "$ARTIFACT_REPO" --limit 100 --json tagName,createdAt \
+            --jq '[.[] | select(.tagName | startswith("linux-"))] | sort_by(.createdAt) | reverse | .[20:] | .[].tagName' | \
+            while IFS= read -r old_tag; do
+              [[ -n "$old_tag" ]] || continue
+              gh release delete "$old_tag" -R "$ARTIFACT_REPO" --cleanup-tag --yes || true
+            done
+
+      - name: Report Linux build failure to private source issues
+
+        if: steps.runtime_guard.outputs.should_run == 'true' && always() && steps.build.outputs.exit_code != '0'
+
+        shell: bash
+
+        env:
+
+          GH_TOKEN: ${{ secrets.SOURCE_REPO_TOKEN }}
+
+          SOURCE_REPO: ${{ env.SOURCE_REPO }}
+
+          SOURCE_REF: ${{ env.SOURCE_REF }}
+
+          SOURCE_SHA: ${{ env.SOURCE_SHA }}
+
+          BUILD_EXIT_CODE: ${{ steps.build.outputs.exit_code }}
+
+        run: |
+
+          set -euo pipefail
+
+          title="CI: Linux build failed"
+
+          body="/tmp/linux-build-failure.md"
+
+          release_url="https://github.com/${ARTIFACT_REPO}/releases/tag/linux-${GITHUB_RUN_NUMBER}"
+
+          tail_file="/tmp/build-log-tail.txt"
+
+          if [[ -f dist/build.log ]]; then
+
+            tail -n 160 dist/build.log > "$tail_file" || true
+
+          else
+
+            echo "dist/build.log missing" > "$tail_file"
+
+          fi
+
+          cat > "$body" <<EOF
+
+          # Linux build failed
+
+          - Source repo: ${SOURCE_REPO}
+
+          - Source ref: ${SOURCE_REF}
+
+          - Source sha: ${SOURCE_SHA:-unknown}
+
+          - Public run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+
+          - Private release/logs: ${release_url}
+
+          - Build exit code: ${BUILD_EXIT_CODE:-unknown}
+
+          - Time: $(date -u +%FT%TZ)
+
+          ## Build log tail
+
+          \`\`\`text
+
+          $(cat "$tail_file")
+
+          \`\`\`
+
+          EOF
+
+          issue="$(gh issue list -R "$SOURCE_REPO" --state all --search "$title in:title" --json number,title --jq '.[] | select(.title == "CI: Linux build failed") | .number' | head -n 1 || true)"
+
+          if [[ -z "$issue" ]]; then
+
+            gh issue create -R "$SOURCE_REPO" --title "$title" --body-file "$body" >/dev/null
+
+          else
+
+            gh issue edit "$issue" -R "$SOURCE_REPO" --body-file "$body" >/dev/null
+
+            gh issue reopen "$issue" -R "$SOURCE_REPO" >/dev/null 2>&1 || true
+
+          fi
+
+      - name: Fail job if build failed
+
+        if: steps.runtime_guard.outputs.should_run == 'true' && steps.build.outputs.exit_code != '0'
+
+        shell: bash
+
+        run: exit 1
+
+  static-analysis:
+
+    name: Weekly CodeQL private report
+
+    needs: build-linux
+
+    runs-on: ubuntu-latest
+
+    timeout-minutes: 60
+
+    if: false
+
+    env:
+
+      ANALYSIS_TAG: static-analysis-${{ github.run_number }}
+
+      REPORT_DIR: analysis-report
+
+    steps:
+
+      - name: Checkout private source
+
+        uses: actions/checkout@v4
+
+        with:
+
+          repository: ${{ env.SOURCE_REPO }}
+
+          token: ${{ secrets.SOURCE_REPO_TOKEN }}
+
+          fetch-depth: 0
+
+          lfs: true
+
+          submodules: recursive
+
+          path: source
+
+          persist-credentials: false
+
+      - name: Prepare report directory
+
+        shell: bash
+
+        run: |
+
+          set -euo pipefail
+
+          mkdir -p "$REPORT_DIR"
+
+          git -C source rev-parse HEAD > "$REPORT_DIR/source-sha.txt"
+
+      - name: Initialize CodeQL
+
+        uses: github/codeql-action/init@v4
+
+        with:
+
+          languages: cpp
+
+          source-root: source
+
+          build-mode: manual
+
+          queries: security-and-quality
+
+      - name: Login to GHCR for CodeQL build snapshot
+
+        uses: docker/login-action@v3
+
+        with:
+
+          registry: ghcr.io
+
+          username: ${{ secrets.GHCR_USERNAME }}
+
+          password: ${{ secrets.GHCR_TOKEN }}
+
+      - name: Capture CodeQL build snapshot
+
+        shell: bash
+
+        run: |
+
+          set -euo pipefail
+
+          HOST_SOURCE="$PWD/source"
+
+          docker pull "$UE_IMAGE"
+
+          docker run --rm --user root \
+            -e PROJECT_FILE="$PROJECT_FILE" \
+            -e TARGET_NAME="$TARGET_NAME" \
+            -v "$HOST_SOURCE:$HOST_SOURCE" \
+            -w "$HOST_SOURCE" \
+            "$UE_IMAGE" \
+            bash -lc '
+
+              set -euo pipefail
+
+              if [[ ! -x /home/ue4/UnrealEngine/Engine/Source/ThirdParty/Intel/ISPC/bin/Linux/ispc ]]; then
+
+                ispc_version="v1.30.0"
+
+                curl -fsSL "https://github.com/ispc/ispc/releases/download/${ispc_version}/ispc-${ispc_version}-linux.tar.gz" -o /tmp/ispc.tar.gz
+
+                tar -xzf /tmp/ispc.tar.gz -C /tmp
+
+                mkdir -p /home/ue4/UnrealEngine/Engine/Source/ThirdParty/Intel/ISPC/bin/Linux
+
+                install -m 755 "/tmp/ispc-${ispc_version}-linux/bin/ispc" /home/ue4/UnrealEngine/Engine/Source/ThirdParty/Intel/ISPC/bin/Linux/ispc
+
+              fi
+
+              if ! command -v flatc >/dev/null 2>&1; then apt-get update && apt-get install -y flatbuffers-compiler; fi
+
+              mkdir -p Plugins/FlatBuffers/Tools/flatc Plugins/FlatBuffers/Tools/include
+
+              install -m 755 "$(command -v flatc)" Plugins/FlatBuffers/Tools/flatc/flatc || true
+
+              install -m 755 "$(command -v flatc)" Plugins/FlatBuffers/Tools/flatc/flatc.exe || true
+
+              /home/ue4/UnrealEngine/Engine/Build/BatchFiles/Linux/Build.sh "$TARGET_NAME" Linux Development "$PWD/$PROJECT_FILE" -WaitMutex -NoHotReload -NoUBA -MaxParallelActions=2
+
+            '
+
+      - name: Run CodeQL analyze to private SARIF
+
+        uses: github/codeql-action/analyze@v4
+
+        with:
+
+          upload: false
+
+          output: ${{ env.REPORT_DIR }}/codeql-sarif
+
+          category: weekly-private-source
+
+      - name: Summarize CodeQL SARIF
+
+        shell: bash
+
+        run: |
+
+          set -euo pipefail
+
+          python3 - <<'PY'
+
+          import json, pathlib, collections
+
+          sarif_files = sorted(pathlib.Path('analysis-report/codeql-sarif').glob('*.sarif'))
+
+          sarif = sarif_files[0] if sarif_files else pathlib.Path('analysis-report/codeql-results.sarif')
+
+          out = pathlib.Path('analysis-report/codeql-summary.md')
+
+          data = json.loads(sarif.read_text(encoding='utf-8')) if sarif.exists() else {}
+
+          if sarif.exists():
+
+              pathlib.Path('analysis-report/codeql-results.sarif').write_text(sarif.read_text(encoding='utf-8'), encoding='utf-8')
+
+          runs = data.get('runs', [])
+
+          results = []
+
+          rules = {}
+
+          for run in runs:
+
+              tool = run.get('tool', {}).get('driver', {})
+
+              for rule in tool.get('rules', []) or []:
+
+                  rid = rule.get('id')
+
+                  if rid:
+
+                      rules[rid] = rule.get('shortDescription', {}).get('text') or rule.get('name') or rid
+
+              results.extend(run.get('results', []) or [])
+
+          counts = collections.Counter(r.get('level', 'warning') for r in results)
+
+          lines = [
+
+              '# Weekly Static Analysis', '',
+
+              f'- CodeQL findings: {len(results)}',
+
+              f'- Error: {counts.get("error", 0)}',
+
+              f'- Warning: {counts.get("warning", 0)}',
+
+              f'- Note: {counts.get("note", 0)}', '',
+
+              '## Top findings', ''
+
+          ]
+
+          for r in results[:25]:
+
+              rid = r.get('ruleId', '<unknown>')
+
+              msg = r.get('message', {}).get('text', '').replace('\n', ' ')[:240]
+
+              loc = ''
+
+              try:
+
+                  ploc = r['locations'][0]['physicalLocation']
+
+                  uri = ploc['artifactLocation'].get('uri','')
+
+                  line = ploc.get('region',{}).get('startLine','')
+
+                  loc = f' `{uri}:{line}`'
+
+              except Exception:
+
+                  pass
+
+              lines.append(f'- `{rid}` {rules.get(rid, rid)}{loc}: {msg}')
+
+          out.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+
+          pathlib.Path('analysis-report/codeql-count.txt').write_text(str(len(results)), encoding='utf-8')
+
+          PY
+
+      - name: Publish SARIF release to private builds repo
+
+        shell: bash
+
+        env:
+
+          GH_TOKEN: ${{ secrets.ARTIFACT_REPO_TOKEN }}
+
+        run: |
+
+          set -euo pipefail
+
+          gh release create "$ANALYSIS_TAG" \
             -R "$ARTIFACT_REPO" \
             --title "$ANALYSIS_TAG" \
-            --notes "$analysis_notes" \
-            --latest=false
-          gh release edit "$ANALYSIS_TAG" -R "$ARTIFACT_REPO" --title "$ANALYSIS_TAG" --notes "$analysis_notes" --latest=false
+            --notes "Weekly static analysis for $SOURCE_REPO at $(cat $REPORT_DIR/source-sha.txt). Public run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            || true
+
           gh release upload "$ANALYSIS_TAG" \
             -R "$ARTIFACT_REPO" \
             "$REPORT_DIR/codeql-results.sarif" \
             "$REPORT_DIR/codeql-summary.md" \
             "$REPORT_DIR/source-sha.txt" \
             --clobber
+
       - name: Create or update private issue summary
+
         shell: bash
+
         env:
+
           GH_TOKEN: ${{ secrets.ARTIFACT_REPO_TOKEN }}
+
         run: |
+
           set -euo pipefail
+
           issue_title='Weekly Static Analysis'
+
           source_sha="$(cat "$REPORT_DIR/source-sha.txt")"
+
           release_url="https://github.com/${ARTIFACT_REPO}/releases/tag/${ANALYSIS_TAG}"
+
           run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+
           summary="$(cat "$REPORT_DIR/codeql-summary.md")"
+
           body_file="$REPORT_DIR/issue-body.md"
+
           cat > "$body_file" <<EOF
+
           # Weekly Static Analysis
+
           - Public run: ${run_url}
+
           - Source repo: ${SOURCE_REPO}
+
           - Source commit: ${source_sha}
+
           - Private release assets: ${release_url}
+
           ${summary}
+
           EOF
+
           issue_number="$(gh issue list -R "$ARTIFACT_REPO" --state all --search "$issue_title in:title" --json number,title --jq '.[] | select(.title == "Weekly Static Analysis") | .number' | head -n 1 || true)"
+
           if [[ -z "$issue_number" ]]; then
+
             issue_number="$(gh issue create -R "$ARTIFACT_REPO" --title "$issue_title" --body-file "$body_file" --json number --jq .number)"
+
           else
+
             gh issue edit "$issue_number" -R "$ARTIFACT_REPO" --body-file "$body_file"
+
             gh issue reopen "$issue_number" -R "$ARTIFACT_REPO" || true
+
           fi
+
           if [[ "$(cat "$REPORT_DIR/codeql-count.txt")" == "0" ]]; then
+
             gh issue comment "$issue_number" -R "$ARTIFACT_REPO" --body "Weekly static analysis found 0 CodeQL findings for ${source_sha}. Release: ${release_url}"
+
             gh issue close "$issue_number" -R "$ARTIFACT_REPO" || true
+
           fi
