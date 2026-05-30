@@ -38,6 +38,11 @@ name: Private Source Linux Build
 
     types: [linux-build]
 
+concurrency:
+
+  group: linux-build-${{ github.event.client_payload.source_ref || 'main' }}
+  cancel-in-progress: false
+
 permissions:
 
   contents: read
@@ -308,10 +313,6 @@ jobs:
             archive = ".cache-restore/sccache-cache.tar.zst"
             allowed = set()
             safe_types = {tarfile.REGTYPE, tarfile.DIRTYPE}
-            for name in ("GNUTYPE", "LONGLINKTYPE", "LNAMETYPE"):
-                t = getattr(tarfile, name, None)
-                if t is not None:
-                    safe_types.add(t)
             with tarfile.open(archive, "r:zstd") as tf:
                 for member in tf.getmembers():
                     if member.type not in safe_types:
@@ -372,10 +373,6 @@ jobs:
                 "Plugins/YarnSpinner-Unreal-main/Binaries/", "Plugins/YarnSpinner-Unreal-main/Intermediate/",
             )
             safe_types = {tarfile.REGTYPE, tarfile.DIRTYPE}
-            for name in ("GNUTYPE", "LONGLINKTYPE", "LNAMETYPE"):
-                t = getattr(tarfile, name, None)
-                if t is not None:
-                    safe_types.add(t)
             with tarfile.open(archive, "r:zstd") as tf:
                 for member in tf.getmembers():
                     if member.type not in safe_types:
@@ -898,6 +895,27 @@ jobs:
             done
 
           done
+
+      - name: Prune old linux-build releases
+
+        if: steps.runtime_guard.outputs.should_run == 'true' && always()
+
+        shell: bash
+
+        env:
+
+          GH_TOKEN: ${{ secrets.ARTIFACT_REPO_TOKEN }}
+
+        run: |
+
+          set -euo pipefail
+
+          gh release list -R "$ARTIFACT_REPO" --limit 100 --json tagName,createdAt \
+            --jq '[.[] | select(.tagName | startswith("linux-"))] | sort_by(.createdAt) | reverse | .[20:] | .[].tagName' | \
+            while IFS= read -r old_tag; do
+              [[ -n "$old_tag" ]] || continue
+              gh release delete "$old_tag" -R "$ARTIFACT_REPO" --cleanup-tag --yes || true
+            done
 
       - name: Report Linux build failure to private source issues
 
