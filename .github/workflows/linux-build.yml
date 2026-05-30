@@ -308,14 +308,12 @@ jobs:
 
           if gh release download "$cache_tag" -R "$ARTIFACT_REPO" -p sccache-cache.tar.zst -D .cache-restore --clobber; then
 
-            zstd -dc .cache-restore/sccache-cache.tar.zst > .cache-restore/sccache-cache.tar
-            python3 - <<'PY'
+            cat > /tmp/_validate_tar.py <<'PY'
             import sys, tarfile
-            archive = ".cache-restore/sccache-cache.tar"
             allowed = set()
             safe_types = {tarfile.REGTYPE, tarfile.DIRTYPE}
-            with tarfile.open(archive, "r:") as tf:
-                for member in tf.getmembers():
+            with tarfile.open(fileobj=sys.stdin.buffer, mode="r|") as tf:
+                for member in tf:
                     if member.type not in safe_types:
                         print(f"Rejected non-regular entry: {member.name!r} (type={member.type})", file=sys.stderr)
                         sys.exit(1)
@@ -326,7 +324,8 @@ jobs:
                     allowed.add(name)
             print("sccache archive path validation passed")
             PY
-            rm -f .cache-restore/sccache-cache.tar
+            zstd -dc .cache-restore/sccache-cache.tar.zst | python3 /tmp/_validate_tar.py
+            rm -f /tmp/_validate_tar.py
 
             sudo tar --zstd --no-same-owner --no-same-permissions -xf .cache-restore/sccache-cache.tar.zst -C .sccache-cache || true
 
@@ -370,11 +369,7 @@ jobs:
             python3 - <<'PY'
             import sys, tarfile
             archive = ".build-cache-restore/ue-build-products.tar"
-            allowed_prefixes = (
-                "Binaries/", "Intermediate/", "Saved/",
-                "Plugins/Flow/Binaries/", "Plugins/Flow/Intermediate/",
-                "Plugins/YarnSpinner-Unreal-main/Binaries/", "Plugins/YarnSpinner-Unreal-main/Intermediate/",
-            )
+            allowed_prefixes = ("Binaries/", "Intermediate/", "Saved/")
             safe_types = {tarfile.REGTYPE, tarfile.DIRTYPE}
             with tarfile.open(archive, "r:") as tf:
                 for member in tf.getmembers():
@@ -385,7 +380,8 @@ jobs:
                     if not name or name.startswith("/") or ".." in name.split("/"):
                         print(f"Rejected unsafe entry: {member.name!r}", file=sys.stderr)
                         sys.exit(1)
-                    if not any(name.startswith(p) for p in allowed_prefixes):
+                    plugin_cache_path = name.startswith("Plugins/") and ("/Binaries/" in name or "/Intermediate/" in name)
+                    if not (any(name.startswith(p) for p in allowed_prefixes) or plugin_cache_path):
                         print(f"Rejected entry outside allowlist: {member.name!r}", file=sys.stderr)
                         sys.exit(1)
             print("UE build-products archive path validation passed")
@@ -607,21 +603,6 @@ jobs:
 
                 echo "sccache disabled for validation build"
 
-              fi
-
-              if [[ -x .sonar/build-wrapper-linux-x86/build-wrapper-linux-x86-64 ]]; then
-                echo "Advanced analysis: disabling sccache and removing UE incremental outputs before build-wrapper capture"
-                if [[ -n "${toolchain_bin:-}" ]]; then
-                  for compiler in clang clang++; do
-                    if [[ -e "$toolchain_bin/$compiler.real" ]]; then
-                      mv -f "$toolchain_bin/$compiler.real" "$toolchain_bin/$compiler"
-                    fi
-                  done
-                fi
-                export SCCACHE_DISABLE=1
-                unset SCCACHE_DIR SCCACHE_BASEDIRS SCCACHE_CACHE_SIZE UE_SCCACHE_EXECUTABLE CCACHE_EXEC
-                rm -rf Binaries Intermediate Saved/UnrealBuildTool
-                find Plugins -type d \( -name Binaries -o -name Intermediate \) -prune -exec rm -rf {} + 2>/dev/null || true
               fi
 
               set +e
