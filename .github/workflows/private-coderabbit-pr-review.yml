@@ -1,0 +1,367 @@
+name: Private CodeRabbit PR Review
+
+on:
+  repository_dispatch:
+    types: [private-coderabbit-pr-review]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+  statuses: write
+
+concurrency:
+  group: private-coderabbit-pr-review-rotation
+  cancel-in-progress: false
+
+env:
+  ARTIFACT_REPO: vvvvy531/myproject-linux-builds
+  ROTATION_STATE_TITLE: CodeRabbit PR Review Account Rotation
+
+jobs:
+  review:
+    name: CodeRabbit PR Review
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      SOURCE_REPO: ${{ github.event.client_payload.source_repo }}
+      PR_NUMBER: ${{ github.event.client_payload.pr_number }}
+      PR_URL: ${{ format('https://github.com/{0}/pull/{1}', github.event.client_payload.source_repo, github.event.client_payload.pr_number) }}
+      HEAD_SHA: ${{ github.event.client_payload.head_sha }}
+
+    steps:
+      - name: Validate PR payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$SOURCE_REPO" in
+            vvvvy531/myproject-source)
+              ;;
+            *)
+              echo "Invalid source_repo payload" >&2
+              exit 1
+              ;;
+          esac
+          case "$PR_NUMBER" in
+            ''|*[!0-9]*)
+              echo "Invalid pr_number payload" >&2
+              exit 1
+              ;;
+          esac
+          echo "Review target: ${SOURCE_REPO}#${PR_NUMBER}"
+          echo "PR URL: ${PR_URL}"
+
+      - name: Mark CodeRabbit review pending
+        if: env.HEAD_SHA != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set +x
+          gh api "repos/${SOURCE_REPO}/statuses/${HEAD_SHA}" \
+            -f state=pending \
+            -f context="Public CodeRabbit PR Review" \
+            -f description="CodeRabbit review running in public CI" \
+            -f target_url="$RUN_URL"
+
+      - name: Checkout private source
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          repository: ${{ env.SOURCE_REPO }}
+          token: ${{ secrets.PRIVATE_SOURCE_PAT }}
+          ref: refs/pull/${{ env.PR_NUMBER }}/head
+          fetch-depth: 0
+          lfs: false
+          submodules: recursive
+          path: source
+          persist-credentials: false
+
+      - name: Install CodeRabbit CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          export CI=1
+          curl -fsSL https://cli.coderabbit.ai/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Select CodeRabbit account
+        id: account
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          state_file=/tmp/coderabbit-pr-rotation-state.md
+          title="$ROTATION_STATE_TITLE"
+          issue="$(TITLE="$title" gh issue list -R "$GITHUB_REPOSITORY" --state all --search "$title in:title" --json number,title --jq '[.[] | select(.title == env.TITLE) | .number][0] // ""')"
+          if [[ -n "$issue" ]]; then
+            gh issue view "$issue" -R "$GITHUB_REPOSITORY" --json body --jq .body > "$state_file" || true
+          else
+            : > "$state_file"
+          fi
+          now="$(date -u +%s)"
+          python3 - "$state_file" "$now" <<'PY' > /tmp/coderabbit-pr-account.env
+          import json, pathlib, re, sys
+          path = pathlib.Path(sys.argv[1])
+          now = int(sys.argv[2])
+          body = path.read_text(encoding='utf-8', errors='replace') if path.exists() else ''
+          match = re.search(r'```json\s*(\{.*?\})\s*```', body, re.S)
+          state = json.loads(match.group(1)) if match else {}
+          account = int(state.get('next_account', 2) or 2)
+          if account < 2 or account > 21:
+              account = 2
+          usage = state.get('usage', {})
+          accounts = list(range(2, 22))
+          selected = account
+          selected_count = 0
+          selected_window = now
+          for _ in accounts:
+              item = usage.get(str(selected), {})
+              window = int(item.get('window_start', now) or now)
+              count = int(item.get('count', 0) or 0)
+              if now - window >= 3600:
+                  window = now
+                  count = 0
+              if count < 3:
+                  selected_count = count
+                  selected_window = window
+                  break
+              selected = 2 if selected == 21 else selected + 1
+          else:
+              print('No CodeRabbit account quota available in current hour', file=sys.stderr)
+              sys.exit(1)
+          print(f'ACCOUNT={selected}')
+          print(f'COUNT_BEFORE={selected_count}')
+          print(f'WINDOW_START={selected_window}')
+          PY
+          cat /tmp/coderabbit-pr-account.env
+          . /tmp/coderabbit-pr-account.env
+          echo "account=$ACCOUNT" >> "$GITHUB_OUTPUT"
+          echo "count_before=$COUNT_BEFORE" >> "$GITHUB_OUTPUT"
+          echo "window_start=$WINDOW_START" >> "$GITHUB_OUTPUT"
+
+      - name: Restore CodeRabbit auth
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.LINUX_BUILDS_PAT }}
+          ACCOUNT: ${{ steps.account.outputs.account }}
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch linux-artifacts "https://x-access-token:${GH_TOKEN}@github.com/${ARTIFACT_REPO}.git" /tmp/coderabbit-auth-repo
+          cp "/tmp/coderabbit-auth-repo/coderabbit-auth/num.${ACCOUNT}.tar.gz" /tmp/coderabbit-auth.tar.gz
+          entries="$(tar -tzf /tmp/coderabbit-auth.tar.gz)"
+          if printf '%s\n' "$entries" | grep -Eq '(^/|(^|/)\.\.(/|$))'; then
+            echo "Unsafe CodeRabbit auth archive paths" >&2
+            exit 1
+          fi
+          if printf '%s\n' "$entries" | grep -Ev '^\.coderabbit(/|$)' | grep -q .; then
+            echo "Unexpected CodeRabbit auth archive contents" >&2
+            exit 1
+          fi
+          tar --no-same-owner --no-same-permissions -xzf /tmp/coderabbit-auth.tar.gz -C "$HOME"
+          rm -rf /tmp/coderabbit-auth.tar.gz /tmp/coderabbit-auth-repo
+          chmod 700 "$HOME/.coderabbit" || true
+
+      - name: Run CodeRabbit PR review
+        id: review
+        working-directory: source
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
+          GITHUB_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
+        run: |
+          set +x
+          set +e
+          if [[ -z "${PR_BASE_SHA:-}" ]]; then
+            PR_BASE_SHA="$(gh pr view "$PR_NUMBER" --repo "$SOURCE_REPO" --json baseRefOid --jq .baseRefOid)"
+          fi
+          if [[ -z "${PR_BASE_REF:-}" ]]; then
+            PR_BASE_REF="$(gh pr view "$PR_NUMBER" --repo "$SOURCE_REPO" --json baseRefName --jq .baseRefName)"
+          fi
+          coderabbit --version || true
+          git status --short || true
+          git rev-parse HEAD || true
+          auth_header="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w 0)"
+          git -c http.https://github.com/.extraheader="$auth_header" fetch origin "$PR_BASE_REF:$PR_BASE_REF"
+          git cat-file -e "$PR_BASE_SHA^{commit}" || git -c http.https://github.com/.extraheader="$auth_header" fetch origin "$PR_BASE_SHA"
+          coderabbit review --agent --base "$PR_BASE_REF" --base-commit "$PR_BASE_SHA" > coderabbit-pr-review.jsonl 2> coderabbit-pr-review.stderr
+          status=$?
+          tail -n 120 coderabbit-pr-review.stderr || true
+          tail -n 120 coderabbit-pr-review.jsonl || true
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          exit "$status"
+
+      - name: Post CodeRabbit PR review comment
+        if: success()
+        working-directory: source
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          ACCOUNT: ${{ steps.account.outputs.account }}
+        run: |
+          set +x
+          set -euo pipefail
+          python3 - <<'PY' > coderabbit-pr-review.md
+          import json, os
+          from pathlib import Path
+
+          path = Path('coderabbit-pr-review.jsonl')
+          findings = []
+          statuses = []
+          complete = None
+          if path.exists():
+              for line in path.read_text(encoding='utf-8', errors='replace').splitlines():
+                  line = line.strip()
+                  if not line:
+                      continue
+                  try:
+                      event = json.loads(line)
+                  except json.JSONDecodeError:
+                      continue
+                  event_type = event.get('type')
+                  if event_type == 'finding':
+                      findings.append(event)
+                  elif event_type == 'status':
+                      statuses.append(event)
+                  elif event_type == 'complete':
+                      complete = event
+
+          print('## CodeRabbit Review')
+          print()
+          print(f'Account: {os.environ.get("ACCOUNT", "unknown")}')
+          print(f'Run: {os.environ.get("RUN_URL", "")}')
+          print()
+          if findings:
+              print(f'Found {len(findings)} finding(s).')
+              print()
+              print('## Findings')
+              print()
+              for item in findings:
+                  severity = item.get('severity', 'unknown')
+                  file_name = item.get('fileName', 'unknown')
+                  instructions = (item.get('codegenInstructions') or '').strip()
+                  print(f'- **{severity}** `{file_name}`')
+                  if instructions:
+                      print()
+                      for paragraph in instructions.split('\n\n'):
+                          paragraph = paragraph.strip()
+                          if paragraph:
+                              print(f'  {paragraph}')
+                      print()
+          else:
+              print('No CodeRabbit findings reported.')
+              print()
+              if complete:
+                  print(f"Status: `{complete.get('status', 'complete')}`")
+              elif statuses:
+                  last = statuses[-1]
+                  print(f"Last status: `{last.get('status', 'unknown')}`")
+          PY
+          gh pr comment "$PR_NUMBER" --repo "$SOURCE_REPO" --body-file coderabbit-pr-review.md
+      - name: Update account rotation state
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACCOUNT: ${{ steps.account.outputs.account }}
+          WINDOW_START: ${{ steps.account.outputs.window_start }}
+          REVIEW_STATUS: ${{ steps.review.outputs.status }}
+        run: |
+          set -euo pipefail
+          title="$ROTATION_STATE_TITLE"
+          body_file=/tmp/coderabbit-pr-rotation-body.md
+          state_file=/tmp/coderabbit-pr-rotation-prev.md
+          issue="$(TITLE="$title" gh issue list -R "$GITHUB_REPOSITORY" --state all --search "$title in:title" --json number,title --jq '[.[] | select(.title == env.TITLE) | .number][0] // ""')"
+          if [[ -n "$issue" ]]; then
+            gh issue view "$issue" -R "$GITHUB_REPOSITORY" --json body --jq .body > "$state_file" || true
+          else
+            : > "$state_file"
+          fi
+          now="$(date -u +%s)"
+          python3 - "$state_file" "$now" "$ACCOUNT" "$WINDOW_START" "$REVIEW_STATUS" <<'PY' > /tmp/coderabbit-pr-rotation.json
+          import json, pathlib, re, sys, time
+          path = pathlib.Path(sys.argv[1])
+          now = int(sys.argv[2])
+          account = int(sys.argv[3])
+          window_start = int(sys.argv[4] or now)
+          status = sys.argv[5] or ''
+          body = path.read_text(encoding='utf-8', errors='replace') if path.exists() else ''
+          match = re.search(r'```json\s*(\{.*?\})\s*```', body, re.S)
+          state = json.loads(match.group(1)) if match else {}
+          usage = state.get('usage', {})
+          item = usage.get(str(account), {})
+          current_window = int(item.get('window_start', window_start) or window_start)
+          count = int(item.get('count', 0) or 0)
+          if now - current_window >= 3600:
+              current_window = now
+              count = 0
+          if status == '0':
+              count += 1
+          usage[str(account)] = {'window_start': current_window, 'count': count}
+          next_account = account
+          if count >= 3:
+              next_account = 2 if account == 21 else account + 1
+          state = {
+              'next_account': next_account,
+              'last_account': account,
+              'last_status': status,
+              'usage': usage,
+              'run_id': __import__('os').environ.get('GITHUB_RUN_ID', ''),
+              'updated_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(now)),
+          }
+          print(json.dumps(state, separators=(',', ':')))
+          PY
+          {
+            echo '# CodeRabbit PR Review Account Rotation'
+            echo
+            echo 'Do not edit unless resetting CodeRabbit PR review account rotation.'
+            echo
+            echo '```json'
+            cat /tmp/coderabbit-pr-rotation.json
+            echo
+            echo '```'
+          } > "$body_file"
+          if [[ -z "$issue" ]]; then
+            gh issue create -R "$GITHUB_REPOSITORY" --title "$title" --body-file "$body_file" >/dev/null
+          else
+            gh issue edit "$issue" -R "$GITHUB_REPOSITORY" --body-file "$body_file"
+            gh issue reopen "$issue" -R "$GITHUB_REPOSITORY" || true
+          fi
+
+      - name: Mark CodeRabbit review result
+        if: always() && env.HEAD_SHA != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          JOB_STATUS: ${{ job.status }}
+          ACCOUNT: ${{ steps.account.outputs.account }}
+        run: |
+          set +x
+          if [[ "$JOB_STATUS" == "success" ]]; then
+            state=success
+            description="CodeRabbit review completed with account ${ACCOUNT}"
+          else
+            state=failure
+            description="CodeRabbit review failed with account ${ACCOUNT}"
+          fi
+          gh api "repos/${SOURCE_REPO}/statuses/${HEAD_SHA}" \
+            -f state="$state" \
+            -f context="Public CodeRabbit PR Review" \
+            -f description="$description" \
+            -f target_url="$RUN_URL"
+
+      - name: Cleanup local runner state
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          set +x
+          rm -rf source "$HOME/.coderabbit"
+          rm -f ~/.git-credentials
+          git config --global --unset-all credential.helper || true
+
+
+
