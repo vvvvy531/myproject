@@ -303,7 +303,21 @@ jobs:
 
           if gh release download "$cache_tag" -R "$ARTIFACT_REPO" -p sccache-cache.tar.zst -D .cache-restore --clobber; then
 
-            sudo tar --zstd -xf .cache-restore/sccache-cache.tar.zst -C .sccache-cache || true
+            python3 - <<'PY'
+import sys, tarfile
+archive = ".cache-restore/sccache-cache.tar.zst"
+allowed = set()
+with tarfile.open(archive, "r:zstd") as tf:
+    for member in tf.getmembers():
+        name = member.name.rstrip("/")
+        if not name or name.startswith("/") or ".." in name.split("/"):
+            print(f"Rejected unsafe entry: {member.name!r}", file=sys.stderr)
+            sys.exit(1)
+        allowed.add(name)
+print("sccache archive path validation passed")
+PY
+
+            sudo tar --zstd --no-same-owner --no-same-permissions -xf .cache-restore/sccache-cache.tar.zst -C .sccache-cache || true
 
             sudo chown -R "$USER:$USER" .sccache-cache || true
 
@@ -341,7 +355,27 @@ jobs:
 
             ls -lh .build-cache-restore/ue-build-products.tar.zst || true
 
-            tar --zstd -xf .build-cache-restore/ue-build-products.tar.zst -C source || true
+            python3 - <<'PY'
+import sys, tarfile
+archive = ".build-cache-restore/ue-build-products.tar.zst"
+allowed_prefixes = (
+    "Binaries/", "Intermediate/", "Saved/",
+    "Plugins/Flow/Binaries/", "Plugins/Flow/Intermediate/",
+    "Plugins/YarnSpinner-Unreal-main/Binaries/", "Plugins/YarnSpinner-Unreal-main/Intermediate/",
+)
+with tarfile.open(archive, "r:zstd") as tf:
+    for member in tf.getmembers():
+        name = member.name.rstrip("/")
+        if not name or name.startswith("/") or ".." in name.split("/"):
+            print(f"Rejected unsafe entry: {member.name!r}", file=sys.stderr)
+            sys.exit(1)
+        if not any(name.startswith(p) for p in allowed_prefixes):
+            print(f"Rejected entry outside allowlist: {member.name!r}", file=sys.stderr)
+            sys.exit(1)
+print("UE build-products archive path validation passed")
+PY
+
+            tar --zstd --no-same-owner --no-same-permissions -xf .build-cache-restore/ue-build-products.tar.zst -C source || true
 
             echo "== restored UE cache sizes =="
 
@@ -370,22 +404,6 @@ jobs:
             echo "No private UE build-products cache release yet: $cache_tag"
 
           fi
-
-      - name: Download SonarCloud build wrapper
-
-        if: steps.runtime_guard.outputs.should_run == 'true' && github.event_name == 'workflow_dispatch' && inputs.static_analysis == 'true'
-
-        shell: bash
-
-        run: |
-
-          set -euo pipefail
-
-          mkdir -p source/.sonar
-
-          curl -fsSL https://sonarcloud.io/static/cpp/build-wrapper-linux-x86.zip -o /tmp/build-wrapper-linux-x86.zip
-
-          unzip -q -o /tmp/build-wrapper-linux-x86.zip -d source/.sonar
 
       - name: Initialize CodeQL for advanced review
 
@@ -574,30 +592,10 @@ jobs:
 
               fi
 
-              if [[ -x .sonar/build-wrapper-linux-x86/build-wrapper-linux-x86-64 ]]; then
-                echo "Advanced analysis: disabling sccache and removing UE incremental outputs before build-wrapper capture"
-                if [[ -n "${toolchain_bin:-}" ]]; then
-                  for compiler in clang clang++; do
-                    if [[ -e "$toolchain_bin/$compiler.real" ]]; then
-                      mv -f "$toolchain_bin/$compiler.real" "$toolchain_bin/$compiler"
-                    fi
-                  done
-                fi
-                export SCCACHE_DISABLE=1
-                unset SCCACHE_DIR SCCACHE_BASEDIRS SCCACHE_CACHE_SIZE UE_SCCACHE_EXECUTABLE CCACHE_EXEC
-                rm -rf Binaries Intermediate Saved/UnrealBuildTool
-                find Plugins -type d \( -name Binaries -o -name Intermediate \) -prune -exec rm -rf {} + 2>/dev/null || true
-              fi
-
               set +e
 
               build_cmd=(/home/ue4/UnrealEngine/Engine/Build/BatchFiles/Linux/Build.sh "$TARGET_NAME" Linux Development "$PWD/$PROJECT_FILE" -WaitMutex -NoHotReload -NoUBA -MaxParallelActions=4 -VeryVerbose)
-              if [[ -x .sonar/build-wrapper-linux-x86/build-wrapper-linux-x86-64 ]]; then
-                rm -rf .sonar/bw-output
-                .sonar/build-wrapper-linux-x86/build-wrapper-linux-x86-64 --out-dir .sonar/bw-output "${build_cmd[@]}" 2>&1 | tee ../dist/build.log
-              else
-                "${build_cmd[@]}" 2>&1 | tee ../dist/build.log
-              fi
+              "${build_cmd[@]}" 2>&1 | tee ../dist/build.log
 
               code=${PIPESTATUS[0]}
 
@@ -658,80 +656,6 @@ jobs:
           fi
 
           echo "exit_code=$code" >> "$GITHUB_OUTPUT"
-
-      - name: Check SonarCloud configuration
-
-        if: steps.runtime_guard.outputs.should_run == 'true' && github.event_name == 'workflow_dispatch' && inputs.static_analysis == 'true'
-
-        id: sonar
-
-        shell: bash
-
-        env:
-
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-
-          SONAR_PROJECT_KEY: ${{ vars.SONAR_PROJECT_KEY }}
-
-          SONAR_ORGANIZATION: ${{ vars.SONAR_ORGANIZATION }}
-
-        run: |
-
-          set +x
-
-          if [[ -n "${SONAR_TOKEN:-}" && -n "${SONAR_PROJECT_KEY:-}" && -n "${SONAR_ORGANIZATION:-}" ]]; then
-
-            echo "enabled=true" >> "$GITHUB_OUTPUT"
-
-          else
-
-            echo "enabled=false" >> "$GITHUB_OUTPUT"
-
-            echo "SonarCloud scan skipped: configure SONAR_TOKEN secret plus SONAR_PROJECT_KEY and SONAR_ORGANIZATION variables."
-
-          fi
-
-      - name: Verify SonarCloud build-wrapper output
-
-        if: steps.runtime_guard.outputs.should_run == 'true' && github.event_name == 'workflow_dispatch' && inputs.static_analysis == 'true' && steps.sonar.outputs.enabled == 'true'
-
-        shell: bash
-
-        run: |
-
-          set -euo pipefail
-
-          test -s source/.sonar/bw-output/build-wrapper-dump.json
-
-          test -s source/.sonar/bw-output/compile_commands.json
-
-          ls -lh source/.sonar/bw-output
-
-      - name: Run SonarCloud advanced analysis
-
-        if: steps.runtime_guard.outputs.should_run == 'true' && github.event_name == 'workflow_dispatch' && inputs.static_analysis == 'true' && steps.sonar.outputs.enabled == 'true'
-
-        uses: SonarSource/sonarqube-scan-action@v8
-
-        env:
-
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-
-        with:
-
-          projectBaseDir: source
-
-          args: >
-
-            -Dsonar.projectKey=${{ vars.SONAR_PROJECT_KEY }}
-
-            -Dsonar.organization=${{ vars.SONAR_ORGANIZATION }}
-
-            -Dsonar.sources=.
-
-            -Dsonar.cfamily.compile-commands=source/.sonar/bw-output/compile_commands.json
-
-            -Dsonar.exclusions=**/Binaries/**,**/DerivedDataCache/**,**/Intermediate/**,**/Saved/**,**/.git/**,**/.github/**,**/graphify-out/**,**/.sonar/build-wrapper-linux-x86/**
 
       - name: Run CodeQL advanced analysis
 
@@ -1101,80 +1025,6 @@ jobs:
 
           git -C source rev-parse HEAD > "$REPORT_DIR/source-sha.txt"
 
-      - name: Check SonarCloud configuration
-
-        id: sonar
-
-        shell: bash
-
-        env:
-
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-
-          SONAR_PROJECT_KEY: ${{ vars.SONAR_PROJECT_KEY }}
-
-          SONAR_ORGANIZATION: ${{ vars.SONAR_ORGANIZATION }}
-
-        run: |
-
-          set +x
-
-          if [[ -n "${SONAR_TOKEN:-}" && -n "${SONAR_PROJECT_KEY:-}" && -n "${SONAR_ORGANIZATION:-}" ]]; then
-
-            echo "enabled=true" >> "$GITHUB_OUTPUT"
-
-            cat > "$REPORT_DIR/sonarcloud-summary.md" <<EOF
-
-          # SonarCloud Analysis
-
-          - Status: configured
-
-          - Project key: ${SONAR_PROJECT_KEY}
-
-          - Organization: ${SONAR_ORGANIZATION}
-
-          EOF
-
-          else
-
-            echo "enabled=false" >> "$GITHUB_OUTPUT"
-
-            cat > "$REPORT_DIR/sonarcloud-summary.md" <<EOF
-
-          # SonarCloud Analysis
-
-          - Status: skipped
-
-          - Reason: configure SONAR_TOKEN secret plus SONAR_PROJECT_KEY and SONAR_ORGANIZATION variables.
-
-          EOF
-
-          fi
-
-      - name: Run SonarCloud deep analysis
-
-        if: steps.sonar.outputs.enabled == 'true'
-
-        uses: SonarSource/sonarqube-scan-action@v8
-
-        env:
-
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-
-        with:
-
-          projectBaseDir: source
-
-          args: >
-
-            -Dsonar.projectKey=${{ vars.SONAR_PROJECT_KEY }}
-
-            -Dsonar.organization=${{ vars.SONAR_ORGANIZATION }}
-
-            -Dsonar.sources=.
-
-            -Dsonar.exclusions=**/Binaries/**,**/DerivedDataCache/**,**/Intermediate/**,**/Saved/**,**/.git/**,**/.github/**,**/graphify-out/**
-
       - name: Initialize CodeQL
 
         uses: github/codeql-action/init@v4
@@ -1400,8 +1250,6 @@ jobs:
 
           summary="$(cat "$REPORT_DIR/codeql-summary.md")"
 
-          sonar_summary="$(cat "$REPORT_DIR/sonarcloud-summary.md")"
-
           body_file="$REPORT_DIR/issue-body.md"
 
           cat > "$body_file" <<EOF
@@ -1417,8 +1265,6 @@ jobs:
           - Private release assets: ${release_url}
 
           ${summary}
-
-          ${sonar_summary}
 
           EOF
 
