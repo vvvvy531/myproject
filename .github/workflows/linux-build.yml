@@ -304,18 +304,21 @@ jobs:
           if gh release download "$cache_tag" -R "$ARTIFACT_REPO" -p sccache-cache.tar.zst -D .cache-restore --clobber; then
 
             python3 - <<'PY'
-import sys, tarfile
-archive = ".cache-restore/sccache-cache.tar.zst"
-allowed = set()
-with tarfile.open(archive, "r:zstd") as tf:
-    for member in tf.getmembers():
-        name = member.name.rstrip("/")
-        if not name or name.startswith("/") or ".." in name.split("/"):
-            print(f"Rejected unsafe entry: {member.name!r}", file=sys.stderr)
-            sys.exit(1)
-        allowed.add(name)
-print("sccache archive path validation passed")
-PY
+            import sys, tarfile
+            archive = ".cache-restore/sccache-cache.tar.zst"
+            allowed = set()
+            with tarfile.open(archive, "r:zstd") as tf:
+                for member in tf.getmembers():
+                    if member.type not in (tarfile.REGTYPE, tarfile.DIRTYPE, tarfile.GNUTYPE, tarfile.LONGLINKTYPE, tarfile.LNAMETYPE):
+                        print(f"Rejected non-regular entry: {member.name!r} (type={member.type})", file=sys.stderr)
+                        sys.exit(1)
+                    name = member.name.rstrip("/")
+                    if not name or name.startswith("/") or ".." in name.split("/"):
+                        print(f"Rejected unsafe entry: {member.name!r}", file=sys.stderr)
+                        sys.exit(1)
+                    allowed.add(name)
+            print("sccache archive path validation passed")
+            PY
 
             sudo tar --zstd --no-same-owner --no-same-permissions -xf .cache-restore/sccache-cache.tar.zst -C .sccache-cache || true
 
@@ -356,24 +359,27 @@ PY
             ls -lh .build-cache-restore/ue-build-products.tar.zst || true
 
             python3 - <<'PY'
-import sys, tarfile
-archive = ".build-cache-restore/ue-build-products.tar.zst"
-allowed_prefixes = (
-    "Binaries/", "Intermediate/", "Saved/",
-    "Plugins/Flow/Binaries/", "Plugins/Flow/Intermediate/",
-    "Plugins/YarnSpinner-Unreal-main/Binaries/", "Plugins/YarnSpinner-Unreal-main/Intermediate/",
-)
-with tarfile.open(archive, "r:zstd") as tf:
-    for member in tf.getmembers():
-        name = member.name.rstrip("/")
-        if not name or name.startswith("/") or ".." in name.split("/"):
-            print(f"Rejected unsafe entry: {member.name!r}", file=sys.stderr)
-            sys.exit(1)
-        if not any(name.startswith(p) for p in allowed_prefixes):
-            print(f"Rejected entry outside allowlist: {member.name!r}", file=sys.stderr)
-            sys.exit(1)
-print("UE build-products archive path validation passed")
-PY
+            import sys, tarfile
+            archive = ".build-cache-restore/ue-build-products.tar.zst"
+            allowed_prefixes = (
+                "Binaries/", "Intermediate/", "Saved/",
+                "Plugins/Flow/Binaries/", "Plugins/Flow/Intermediate/",
+                "Plugins/YarnSpinner-Unreal-main/Binaries/", "Plugins/YarnSpinner-Unreal-main/Intermediate/",
+            )
+            with tarfile.open(archive, "r:zstd") as tf:
+                for member in tf.getmembers():
+                    if member.type not in (tarfile.REGTYPE, tarfile.DIRTYPE, tarfile.GNUTYPE, tarfile.LONGLINKTYPE, tarfile.LNAMETYPE):
+                        print(f"Rejected non-regular entry: {member.name!r} (type={member.type})", file=sys.stderr)
+                        sys.exit(1)
+                    name = member.name.rstrip("/")
+                    if not name or name.startswith("/") or ".." in name.split("/"):
+                        print(f"Rejected unsafe entry: {member.name!r}", file=sys.stderr)
+                        sys.exit(1)
+                    if not any(name.startswith(p) for p in allowed_prefixes):
+                        print(f"Rejected entry outside allowlist: {member.name!r}", file=sys.stderr)
+                        sys.exit(1)
+            print("UE build-products archive path validation passed")
+            PY
 
             tar --zstd --no-same-owner --no-same-permissions -xf .build-cache-restore/ue-build-products.tar.zst -C source || true
 
