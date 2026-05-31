@@ -290,15 +290,8 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add "coderabbit-auth/num.${ACCOUNT}.tar.gz"
           git commit -m "Sync CodeRabbit auth account ${ACCOUNT}"
-          for attempt in 1 2 3; do
-            if git pull --rebase origin linux-artifacts && git push origin linux-artifacts; then
-              break
-            fi
-            if [[ "$attempt" == "3" ]]; then
-              exit 1
-            fi
-            sleep $((attempt * 5))
-          done
+          git pull --rebase origin linux-artifacts
+          git push origin linux-artifacts
           rm -rf /tmp/coderabbit-auth-after.tar.gz /tmp/coderabbit-auth-sync
 
       - name: Update account rotation state
