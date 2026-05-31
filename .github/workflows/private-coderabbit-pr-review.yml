@@ -142,6 +142,7 @@ jobs:
           echo "window_start=$WINDOW_START" >> "$GITHUB_OUTPUT"
 
       - name: Restore CodeRabbit auth
+        id: restore_auth
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.LINUX_BUILDS_PAT }}
@@ -160,8 +161,10 @@ jobs:
             exit 1
           fi
           tar --no-same-owner --no-same-permissions -xzf /tmp/coderabbit-auth.tar.gz -C "$HOME"
-          rm -rf /tmp/coderabbit-auth.tar.gz /tmp/coderabbit-auth-repo
           chmod 700 "$HOME/.coderabbit" || true
+          tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner -czf /tmp/coderabbit-auth-before.tar.gz -C "$HOME" .coderabbit
+          echo "auth_sha_before=$(sha256sum /tmp/coderabbit-auth-before.tar.gz | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          rm -rf /tmp/coderabbit-auth.tar.gz /tmp/coderabbit-auth-before.tar.gz /tmp/coderabbit-auth-repo
 
       - name: Run CodeRabbit PR review
         id: review
@@ -260,6 +263,37 @@ jobs:
                   print(f"Last status: `{last.get('status', 'unknown')}`")
           PY
           gh pr comment "$PR_NUMBER" --repo "$SOURCE_REPO" --body-file coderabbit-pr-review.md
+
+      - name: Sync refreshed CodeRabbit auth
+        if: success() && steps.review.outputs.status == '0'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.LINUX_BUILDS_PAT }}
+          ACCOUNT: ${{ steps.account.outputs.account }}
+          AUTH_SHA_BEFORE: ${{ steps.restore_auth.outputs.auth_sha_before }}
+        run: |
+          set -euo pipefail
+          if [[ ! -d "$HOME/.coderabbit" ]]; then
+            echo "No CodeRabbit auth directory to sync"
+            exit 0
+          fi
+          tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner -czf /tmp/coderabbit-auth-after.tar.gz -C "$HOME" .coderabbit
+          auth_sha_after="$(sha256sum /tmp/coderabbit-auth-after.tar.gz | cut -d' ' -f1)"
+          if [[ "$auth_sha_after" == "$AUTH_SHA_BEFORE" ]]; then
+            echo "CodeRabbit auth unchanged for account ${ACCOUNT}; skip sync"
+            exit 0
+          fi
+          git clone --depth 1 --branch linux-artifacts "https://x-access-token:${GH_TOKEN}@github.com/${ARTIFACT_REPO}.git" /tmp/coderabbit-auth-sync
+          cp /tmp/coderabbit-auth-after.tar.gz "/tmp/coderabbit-auth-sync/coderabbit-auth/num.${ACCOUNT}.tar.gz"
+          cd /tmp/coderabbit-auth-sync
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "coderabbit-auth/num.${ACCOUNT}.tar.gz"
+          git commit -m "Sync CodeRabbit auth account ${ACCOUNT}"
+          git pull --rebase origin linux-artifacts
+          git push origin linux-artifacts
+          rm -rf /tmp/coderabbit-auth-after.tar.gz /tmp/coderabbit-auth-sync
+
       - name: Update account rotation state
         if: always()
         shell: bash

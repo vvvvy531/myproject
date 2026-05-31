@@ -308,12 +308,13 @@ jobs:
 
           if gh release download "$cache_tag" -R "$ARTIFACT_REPO" -p sccache-cache.tar.zst -D .cache-restore --clobber; then
 
+            zstd -dc .cache-restore/sccache-cache.tar.zst > .cache-restore/sccache-cache.tar
             python3 - <<'PY'
             import sys, tarfile
-            archive = ".cache-restore/sccache-cache.tar.zst"
+            archive = ".cache-restore/sccache-cache.tar"
             allowed = set()
             safe_types = {tarfile.REGTYPE, tarfile.DIRTYPE}
-            with tarfile.open(archive, "r:zstd") as tf:
+            with tarfile.open(archive, "r:") as tf:
                 for member in tf.getmembers():
                     if member.type not in safe_types:
                         print(f"Rejected non-regular entry: {member.name!r} (type={member.type})", file=sys.stderr)
@@ -325,6 +326,7 @@ jobs:
                     allowed.add(name)
             print("sccache archive path validation passed")
             PY
+            rm -f .cache-restore/sccache-cache.tar
 
             sudo tar --zstd --no-same-owner --no-same-permissions -xf .cache-restore/sccache-cache.tar.zst -C .sccache-cache || true
 
@@ -364,16 +366,17 @@ jobs:
 
             ls -lh .build-cache-restore/ue-build-products.tar.zst || true
 
+            zstd -dc .build-cache-restore/ue-build-products.tar.zst > .build-cache-restore/ue-build-products.tar
             python3 - <<'PY'
             import sys, tarfile
-            archive = ".build-cache-restore/ue-build-products.tar.zst"
+            archive = ".build-cache-restore/ue-build-products.tar"
             allowed_prefixes = (
                 "Binaries/", "Intermediate/", "Saved/",
                 "Plugins/Flow/Binaries/", "Plugins/Flow/Intermediate/",
                 "Plugins/YarnSpinner-Unreal-main/Binaries/", "Plugins/YarnSpinner-Unreal-main/Intermediate/",
             )
             safe_types = {tarfile.REGTYPE, tarfile.DIRTYPE}
-            with tarfile.open(archive, "r:zstd") as tf:
+            with tarfile.open(archive, "r:") as tf:
                 for member in tf.getmembers():
                     if member.type not in safe_types:
                         print(f"Rejected non-regular entry: {member.name!r} (type={member.type})", file=sys.stderr)
@@ -387,6 +390,7 @@ jobs:
                         sys.exit(1)
             print("UE build-products archive path validation passed")
             PY
+            rm -f .build-cache-restore/ue-build-products.tar
 
             tar --zstd --no-same-owner --no-same-permissions -xf .build-cache-restore/ue-build-products.tar.zst -C source || true
 
