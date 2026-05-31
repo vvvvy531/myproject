@@ -167,26 +167,55 @@ jobs:
           docker run --rm --network host --entrypoint bash -e ANTHROPIC_BASE_URL -e ANTHROPIC_API_KEY -e ANTHROPIC_AUTH_TOKEN -e ANTHROPIC_MODEL -e ANTHROPIC_CUSTOM_MODEL_OPTION -e ANTHROPIC_DEFAULT_OPUS_MODEL -e ANTHROPIC_DEFAULT_SONNET_MODEL -e ANTHROPIC_DEFAULT_HAIKU_MODEL "$CLAUDE_CLI_IMAGE" -lc 'curl -fsS -H "Authorization: Bearer ${ANTHROPIC_API_KEY}" "${ANTHROPIC_BASE_URL%/}/v1/models" >/dev/null'
 
           set +e
-          docker run --rm --network host \
-            -v "$tmpdir:/review" \
-            -w /review \
-            -e ANTHROPIC_API_KEY \
-            -e ANTHROPIC_AUTH_TOKEN \
-            -e ANTHROPIC_BASE_URL \
-            -e ANTHROPIC_MODEL \
-            -e ANTHROPIC_CUSTOM_MODEL_OPTION \
-            -e ANTHROPIC_DEFAULT_OPUS_MODEL \
-            -e ANTHROPIC_DEFAULT_SONNET_MODEL \
-            -e ANTHROPIC_DEFAULT_HAIKU_MODEL \
-            -e HOME=/home/boxd \
-            -v "$tmpdir/home:/home/boxd" \
-            "$CLAUDE_CLI_IMAGE" \
-            --add-dir /review \
-            --model review \
-            -p "Read /review/full-review-prompt.md and produce the requested PR review." \
-            > "$tmpdir/claude-review.md" \
-            2> "$tmpdir/claude-review.err"
-          claude_status=$?
+          max_attempts=2
+          claude_status=0
+          for attempt in $(seq 1 "$max_attempts"); do
+            echo "Claude review attempt ${attempt}/${max_attempts}"
+            docker run --rm --network host \
+              -v "$tmpdir:/review" \
+              -w /review \
+              -e ANTHROPIC_API_KEY \
+              -e ANTHROPIC_AUTH_TOKEN \
+              -e ANTHROPIC_BASE_URL \
+              -e ANTHROPIC_MODEL \
+              -e ANTHROPIC_CUSTOM_MODEL_OPTION \
+              -e ANTHROPIC_DEFAULT_OPUS_MODEL \
+              -e ANTHROPIC_DEFAULT_SONNET_MODEL \
+              -e ANTHROPIC_DEFAULT_HAIKU_MODEL \
+              -e HOME=/home/boxd \
+              -v "$tmpdir/home:/home/boxd" \
+              "$CLAUDE_CLI_IMAGE" \
+              --add-dir /review \
+              --model review \
+              -p "Read /review/full-review-prompt.md and produce the requested PR review." \
+              > "$tmpdir/claude-review.md" \
+              2> "$tmpdir/claude-review.err"
+            claude_status=$?
+
+            # Check if error is transient
+            is_transient=0
+            if [[ -s "$tmpdir/claude-review.err" ]]; then
+              err_content="$(cat "$tmpdir/claude-review.err")"
+              if echo "$err_content" | grep -qiE 'empty or malformed response|HTTP 200|5[0-9]{2}|429|timeout|ECONNRESET|ENOTFOUND|network|rate.limit'; then
+                is_transient=1
+              fi
+            elif [[ $claude_status -ne 0 && ! -s "$tmpdir/claude-review.md" ]]; then
+              is_transient=1
+            fi
+
+            if [[ $claude_status -eq 0 && -s "$tmpdir/claude-review.md" ]]; then
+              echo "Claude review succeeded on attempt ${attempt}"
+              break
+            elif [[ $attempt -lt "$max_attempts" && $is_transient -eq 1 ]]; then
+              echo "Transient failure detected, retrying in 3s..."
+              sleep 3
+              rm -f "$tmpdir/claude-review.md" "$tmpdir/claude-review.err"
+              continue
+            else
+              echo "Claude review failed (non-transient or max attempts reached)"
+              break
+            fi
+          done
           set -e
 
           if [[ -s "$tmpdir/claude-review.err" ]]; then
