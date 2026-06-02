@@ -42,6 +42,8 @@ env:
 
   MAX_CHUNKS_PER_RUN: "3"
 
+  MAX_FILES_PER_CHUNK: "120"
+
 
 
 jobs:
@@ -94,6 +96,28 @@ jobs:
 
           persist-credentials: false
 
+
+
+      - name: Prune third-party and generated folders
+
+        if: steps.interval_guard.outputs.skip != 'true'
+
+        shell: bash
+
+        run: |
+
+          set -euo pipefail
+          find source \
+            \( -type d \( \
+              -name .git -o -name .github -o -name .vs -o -name .vscode -o \
+              -name Binaries -o -name Build -o -name DerivedDataCache -o -name Intermediate -o -name Saved -o \
+              -name node_modules -o -name vendor -o -name vendors -o -name third_party -o -name ThirdParty -o \
+              -name External -o -name Externals -o -name Libraries -o -name Library -o -name SDK -o -name SDKs \
+            \) -prune -print \) > /tmp/coderabbit-pruned-dirs.txt
+          while IFS= read -r d; do
+            [[ "$d" == "source/.git" ]] && continue
+            rm -rf "$d"
+          done < /tmp/coderabbit-pruned-dirs.txt
 
 
       - name: Install CodeRabbit CLI
@@ -167,62 +191,68 @@ jobs:
 
           head_sha="$(git -C source rev-parse HEAD)"
 
-          dirs=(
+          # Discover all first-party code review chunks from the checked-out project.
+          # Includes every Unreal module under Source/ and Plugins/*/Source/.
+          # Excludes generated/build artifacts and third-party/vendor library folders.
+          # Splits very large modules into immediate child subdirectories so each review stays focused.
+          python3 - <<'PY' > "$REPORT_DIR/all-chunks.txt"
+          import os
+          from pathlib import Path
 
-            "Plugins/RoguelikeSharedTypes/Source/RoguelikeSharedTypes"
+          root = Path('source')
+          max_files_per_chunk = int(os.environ.get('MAX_FILES_PER_CHUNK', '120'))
+          code_suffixes = {'.h', '.hpp', '.hh', '.c', '.cc', '.cpp', '.cxx', '.cs', '.uproject', '.uplugin'}
+          excluded_names = {
+              '.git', '.github', '.vs', '.vscode',
+              'Binaries', 'Build', 'DerivedDataCache', 'Intermediate', 'Saved',
+              'node_modules', 'vendor', 'vendors', 'third_party', 'ThirdParty',
+              'External', 'Externals', 'Libraries', 'Library', 'SDK', 'SDKs',
+              'Content', 'Config', 'Resources'
+          }
 
-            "Plugins/GameplayMessageSubsystem/Source/GameplayMessageSubsystem"
+          def excluded(path: Path) -> bool:
+              return any(part in excluded_names for part in path.parts)
 
-            "Plugins/RuntimeRegistryFeature/Source/RuntimeRegistryFeature"
+          def code_file_count(path: Path) -> int:
+              n = 0
+              for f in path.rglob('*'):
+                  if f.is_file() and not excluded(f.relative_to(root)) and f.suffix in code_suffixes:
+                      n += 1
+              return n
 
-            "Plugins/InputSystemFeature/Source/InputSystemFeature"
+          modules = []
+          for pattern in ('Source/*/*.Build.cs', 'Plugins/*/Source/*/*.Build.cs'):
+              for build in root.glob(pattern):
+                  rel = build.parent.relative_to(root)
+                  if not excluded(rel):
+                      modules.append(rel)
 
-            "Plugins/TimeManagementFeature/Source/TimeManagementFeature"
+          chunks = []
+          for module in sorted(set(modules), key=lambda p: p.as_posix().lower()):
+              module_abs = root / module
+              total = code_file_count(module_abs)
+              if total == 0:
+                  continue
+              children = [c for c in module_abs.iterdir() if c.is_dir() and not excluded(c.relative_to(root))]
+              if total > max_files_per_chunk and children:
+                  split_any = False
+                  for child in sorted(children, key=lambda p: p.name.lower()):
+                      cnt = code_file_count(child)
+                      if cnt:
+                          chunks.append(child.relative_to(root).as_posix())
+                          split_any = True
+                  direct = sum(1 for f in module_abs.iterdir() if f.is_file() and f.suffix in code_suffixes)
+                  if direct:
+                      chunks.append(module.as_posix())
+                  elif not split_any:
+                      chunks.append(module.as_posix())
+              else:
+                  chunks.append(module.as_posix())
 
-            "Plugins/RoguelikeCoreFeature/Source/RoguelikeCoreFeature"
-
-            "Plugins/RoguelikePresentationFeature/Source/RoguelikePresentationFeature"
-
-            "Plugins/MetaProgressionFeature/Source/MetaProgressionFeature"
-
-            "Plugins/SaveSystemFeature/Source/SaveSystemInterface"
-
-            "Plugins/SaveSystemFeature/Source/SaveSystemFeature"
-
-            "Plugins/SaveSystemFeature/Source/SaveSystemFeatureTests"
-
-            "Plugins/AIFeature/Source/AIFeature"
-
-            "Plugins/MapGenFeature/Source/WorldCore"
-
-            "Plugins/MapGenFeature/Source/WorldDefinitions"
-
-            "Plugins/MapGenFeature/Source/WorldRuntime"
-
-            "Plugins/MapGenFeature/Source/WorldRuntimeUE"
-
-            "Plugins/MapGenFeature/Source/WorldPersistence"
-
-            "Plugins/MapGenFeature/Source/WorldGen"
-
-            "Plugins/MapGenFeature/Source/WorldGenEditor"
-
-            "Plugins/QuestDialogueFeature/Source/QuestDialogueFeature"
-
-            "Plugins/UIFeature/Source/UIFeature"
-
-            "Plugins/GameContentFeature/Source/GameContentFeature"
-
-            "Plugins/GameContentFeature/Source/GameContentFeatureEditor"
-
-            "Plugins/Flow/Source/Flow"
-
-            "Plugins/Flow/Source/FlowEditor"
-
-            "Plugins/Flow/Source/FlowDebugger"
-
-          )
-
+          for c in dict.fromkeys(chunks):
+              print(c)
+          PY
+          mapfile -t dirs < "$REPORT_DIR/all-chunks.txt"
           printf '%s\n' "${dirs[@]}" > "$REPORT_DIR/all-chunks.txt"
 
           next_index=0
@@ -252,6 +282,7 @@ jobs:
           fi
 
           total="${#dirs[@]}"
+          if (( total == 0 )); then echo "No first-party code chunks discovered" >&2; exit 1; fi
 
           if (( next_index >= total )); then next_index=0; fi
 

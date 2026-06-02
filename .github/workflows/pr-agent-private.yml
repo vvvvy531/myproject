@@ -181,21 +181,29 @@ jobs:
         run: |
           set +x
           set +e
-          set -o pipefail
-          pr-agent --pr_url "$PR_URL" review 2>&1 | tee pr-agent-review.log
-          pipeline_status=(${PIPESTATUS[@]})
-          pr_agent_status=${pipeline_status[0]:-1}
-          tee_status=${pipeline_status[1]:-1}
-          set +o pipefail
+          max_attempts=3
+          pr_agent_status=1
+          for attempt in $(seq 1 "$max_attempts"); do
+            echo "PR-Agent review attempt ${attempt}/${max_attempts}"
+            set -o pipefail
+            pr-agent --pr_url "$PR_URL" review 2>&1 | tee pr-agent-review.log
+            pipeline_status=(${PIPESTATUS[@]})
+            pr_agent_status=${pipeline_status[0]:-1}
+            tee_status=${pipeline_status[1]:-1}
+            set +o pipefail
+            if [[ "$tee_status" -ne 0 ]]; then
+              echo "tee failed while capturing PR-Agent output" >&2
+              exit "$tee_status"
+            fi
+            if grep -E "(Failed to review PR|Failed to parse review data|Body cannot be blank|Failed to generate prediction|Error during LLM inference|litellm\.Timeout|Traceback)" pr-agent-review.log >/dev/null; then
+              echo "PR-Agent reported an internal LLM/review failure" >&2
+              pr_agent_status=1
+              [[ $attempt -lt "$max_attempts" ]] && echo "Retrying PR-Agent review in 3s..." && sleep 3
+              continue
+            fi
+            break
+          done
           set -e
-          if [[ "$tee_status" -ne 0 ]]; then
-            echo "tee failed while capturing PR-Agent output" >&2
-            exit "$tee_status"
-          fi
-          if grep -E "(Failed to review PR|Failed to generate prediction|Error during LLM inference|litellm\.Timeout|Traceback)" pr-agent-review.log >/dev/null; then
-            echo "PR-Agent reported an internal LLM/review failure" >&2
-            exit 1
-          fi
           exit "$pr_agent_status"
 
 

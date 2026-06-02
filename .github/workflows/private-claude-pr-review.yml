@@ -163,8 +163,25 @@ jobs:
           export ANTHROPIC_DEFAULT_HAIKU_MODEL=review
           printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USERNAME" --password-stdin
           docker pull "$CLAUDE_CLI_IMAGE"
-          curl -fsS -H "Authorization: Bearer ${ANTHROPIC_API_KEY}" "${ANTHROPIC_BASE_URL%/}/v1/models" >/dev/null
-          docker run --rm --network host --entrypoint bash -e ANTHROPIC_BASE_URL -e ANTHROPIC_API_KEY -e ANTHROPIC_AUTH_TOKEN -e ANTHROPIC_MODEL -e ANTHROPIC_CUSTOM_MODEL_OPTION -e ANTHROPIC_DEFAULT_OPUS_MODEL -e ANTHROPIC_DEFAULT_SONNET_MODEL -e ANTHROPIC_DEFAULT_HAIKU_MODEL "$CLAUDE_CLI_IMAGE" -lc 'curl -fsS -H "Authorization: Bearer ${ANTHROPIC_API_KEY}" "${ANTHROPIC_BASE_URL%/}/v1/models" >/dev/null'
+          set +e
+          preflight_ok=0
+          for attempt in 1 2 3; do
+            echo "Claude API preflight attempt ${attempt}/3"
+            curl -fsS -H "Authorization: Bearer ${ANTHROPIC_API_KEY}" "${ANTHROPIC_BASE_URL%/}/v1/models" >/dev/null 2>&1
+            host_status=$?
+            docker run --rm --network host --entrypoint bash -e ANTHROPIC_BASE_URL -e ANTHROPIC_API_KEY -e ANTHROPIC_AUTH_TOKEN -e ANTHROPIC_MODEL -e ANTHROPIC_CUSTOM_MODEL_OPTION -e ANTHROPIC_DEFAULT_OPUS_MODEL -e ANTHROPIC_DEFAULT_SONNET_MODEL -e ANTHROPIC_DEFAULT_HAIKU_MODEL "$CLAUDE_CLI_IMAGE" -lc 'curl -fsS -H "Authorization: Bearer ${ANTHROPIC_API_KEY}" "${ANTHROPIC_BASE_URL%/}/v1/models" >/dev/null 2>&1'
+            container_status=$?
+            if [[ $host_status -eq 0 && $container_status -eq 0 ]]; then
+              preflight_ok=1
+              break
+            fi
+            [[ $attempt -lt 3 ]] && echo "Preflight failed, retrying in 3s..." && sleep 3
+          done
+          if [[ $preflight_ok -ne 1 ]]; then
+            echo "Claude API preflight failed after retries" >&2
+            exit 1
+          fi
+          set -e
 
           set +e
           max_attempts=2
