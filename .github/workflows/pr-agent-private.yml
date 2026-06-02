@@ -159,12 +159,12 @@ jobs:
               except urllib.error.HTTPError as e:
                   print(f"/chat/completions failed: HTTP {e.code} for model {probe_model} attempt {attempt}/3")
                   if attempt == 3:
-                      sys.exit(1)
+                      break
                   time.sleep(3)
               except Exception as e:
                   print(f"/chat/completions failed: {type(e).__name__} for model {probe_model} attempt {attempt}/3")
                   if attempt == 3:
-                      sys.exit(1)
+                      break
                   time.sleep(3)
           PY
 
