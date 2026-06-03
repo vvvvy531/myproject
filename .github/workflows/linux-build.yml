@@ -376,6 +376,8 @@ jobs:
 
           queries: security-and-quality
 
+          dependency-caching: false
+
       - name: Build Linux target in official UE container
 
         if: steps.runtime_guard.outputs.should_run == 'true'
