@@ -26,6 +26,10 @@ on:
 permissions:
   contents: read
 
+env:
+  SCRIPTS_REF: main
+  ARTIFACT_REPO: vvvvy531/myproject-linux-builds
+
 concurrency:
   group: review-c-${{ github.event.client_payload.source_repo || inputs.source_repo }}-${{ github.event.client_payload.pr_number || inputs.pr_number }}
   cancel-in-progress: true
@@ -93,7 +97,7 @@ jobs:
           set -euo pipefail
           printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USERNAME" --password-stdin
           gh api -H 'Accept: application/vnd.github.raw' \
-            "repos/${ARTIFACT_REPO}/contents/ci-scripts/run-docker-review.sh?ref=main" \
+            "repos/${ARTIFACT_REPO}/contents/ci-scripts/run-docker-review.sh?ref=${SCRIPTS_REF}" \
             > /tmp/_docker_review.sh
           bash /tmp/_docker_review.sh
           rm -f /tmp/_docker_review.sh
@@ -123,7 +127,7 @@ jobs:
           GH_TOKEN: ${{ secrets.LINUX_BUILDS_PAT }}
         run: |
           gh api -H 'Accept: application/vnd.github.raw' \
-            "repos/${ARTIFACT_REPO:-vvvvy531/myproject-linux-builds}/contents/ci-scripts/cleanup-review.sh?ref=main" \
+            "repos/${ARTIFACT_REPO}/contents/ci-scripts/cleanup-review.sh?ref=${SCRIPTS_REF}" \
             > /tmp/_cleanup.sh
           bash /tmp/_cleanup.sh
           rm -f /tmp/_cleanup.sh

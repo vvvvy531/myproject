@@ -19,10 +19,11 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  SCRIPTS_REF: main
   SOURCE_REPO: vvvvy531/myproject-source
   ARTIFACT_REPO: vvvvy531/myproject-linux-builds
   AUTH_CREDENTIAL_PATH: review-auth/num.1.tar.gz.enc
-  REPORT_DIR: full-review-report
+  REPORT_DIR: ${{ github.workspace }}/full-review-report
   MAX_CHUNKS_PER_RUN: "3"
   MAX_FILES_PER_CHUNK: "120"
 
@@ -81,7 +82,7 @@ jobs:
         run: |
           set -euo pipefail
           gh api -H 'Accept: application/vnd.github.raw' \
-            "repos/${ARTIFACT_REPO}/contents/ci-scripts/setup-review.sh?ref=main" \
+            "repos/${ARTIFACT_REPO}/contents/ci-scripts/setup-review.sh?ref=${SCRIPTS_REF}" \
             > /tmp/_setup.sh
           bash /tmp/_setup.sh
           rm -f /tmp/_setup.sh
@@ -312,7 +313,7 @@ jobs:
           GH_TOKEN: ${{ secrets.LINUX_BUILDS_PAT }}
         run: |
           gh api -H 'Accept: application/vnd.github.raw' \
-            "repos/${ARTIFACT_REPO}/contents/ci-scripts/cleanup-review.sh?ref=main" \
+            "repos/${ARTIFACT_REPO}/contents/ci-scripts/cleanup-review.sh?ref=${SCRIPTS_REF}" \
             > /tmp/_cleanup.sh
           bash /tmp/_cleanup.sh
           rm -f /tmp/_cleanup.sh
