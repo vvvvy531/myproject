@@ -137,6 +137,8 @@ jobs:
       - name: Execute review
         id: review
         working-directory: source
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
         shell: bash
         run: |
           set +x
@@ -146,7 +148,11 @@ jobs:
           for attempt in $(seq 1 "$max_attempts"); do
             echo "Review attempt ${attempt}/${max_attempts}"
             set -o pipefail
-            review-cli review "$PR_URL" 2>&1 | tee /tmp/review.log
+          # Determine base ref from PR
+          BASE_REF="$(gh api "repos/${SOURCE_REPO}/pulls/${PR_NUMBER}" --jq '.base.ref')"
+          echo "Base ref: ${BASE_REF}"
+          git fetch origin "${BASE_REF}" --depth=1 2>/dev/null || true
+          review-cli review --base "origin/${BASE_REF}" --agent 2>&1 | tee /tmp/review.log
             pipeline_status=(${PIPESTATUS[@]})
             status=${pipeline_status[0]:-1}
             set +o pipefail
