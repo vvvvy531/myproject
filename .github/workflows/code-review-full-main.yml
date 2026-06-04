@@ -141,7 +141,6 @@ jobs:
                               __import__('pathlib').Path('/tmp/third-party-excluded.txt').open('a').write(f'{ps.parent.name}\n')
                           else:
                               __import__('pathlib').Path('/tmp/third-party-kept.txt').open('a').write(f'{ps.parent.name}: {sorted(f.name for f in ps.parent.iterdir() if f.is_file())}\n')
-                          else:
                               plugins_source.append(ps)
           seen = set()
           all_source = []
