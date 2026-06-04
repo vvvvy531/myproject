@@ -149,9 +149,9 @@ jobs:
           PY
           next_index=0
           state_title='Full Scan State'
-          issue="$(GH_TOKEN="$PUBLIC_TOKEN" gh issue list --state all --search "$state_title in:title" --json number,title --jq '.[] | select(.title == "Full Scan State") | .number' | head -n 1)"
+          issue="$(GH_TOKEN="$PUBLIC_TOKEN" gh issue list -R "$GITHUB_REPOSITORY" --state all --search "$state_title in:title" --json number,title --jq '.[] | select(.title == "Full Scan State") | .number' | head -n 1)"
           if [[ "$RESET_SCAN" != "true" && -n "$issue" ]]; then
-            GH_TOKEN="$PUBLIC_TOKEN" gh issue view "$issue" --json body --jq .body > /tmp/scan-state.md || true
+            GH_TOKEN="$PUBLIC_TOKEN" gh issue view -R "$GITHUB_REPOSITORY" "$issue" --json body --jq .body > /tmp/scan-state.md || true
             next_index="$(python3 - <<'PY'
           import json,re,pathlib
           s=pathlib.Path('/tmp/scan-state.md').read_text(errors='ignore') if pathlib.Path('/tmp/scan-state.md').exists() else ''
@@ -178,85 +178,67 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
-          AI_KEY: ${{ secrets.REVIEW_PROXY_KEY }}
-          AI_URL: ${{ secrets.REVIEW_PROXY_URL }}
-          AI_MODEL: ${{ secrets.REVIEW_MODEL || 'latest-sonnet' }}
         run: |
           set +x
           set +e
           failed=0
           mkdir -p "$REPORT_DIR/issue-bodies"
-
-          echo "::group::Install Claude Code CLI"
-          curl -fsSL https://claude.ai/install.sh | bash 2>&1 || npm install -g @anthropic-ai/claude-code 2>&1 | tail -5
-          export PATH="$HOME/.local/bin:$PATH"
-          claude --version 2>&1 || true
-          echo "::endgroup::"
-
-          export ANTHROPIC_AUTH_TOKEN="$AI_KEY"
-          export ANTHROPIC_BASE_URL="$AI_URL"
-          export ANTHROPIC_MODEL="$AI_MODEL"
-          export ANTHROPIC_DEFAULT_OPUS_MODEL="$AI_MODEL"
-          export ANTHROPIC_DEFAULT_SONNET_MODEL="$AI_MODEL"
-          export ANTHROPIC_DEFAULT_HAIKU_MODEL="$AI_MODEL"
-          export CLAUDE_CODE_SUBAGENT_MODEL="$AI_MODEL"
-          export DISABLE_AUTOUPDATER=1
-          export CLAUDE_CODE_SKIP_ONBOARDING=1
-
-          echo "::group::Preflight"
-          for pf in 1 2 3 4 5; do
-            http_code=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 30 -H "Authorization: Bearer ${AI_KEY}" "${AI_URL}/models" 2>/dev/null) || http_code="000"
-            if [[ "$http_code" =~ ^(200|301|302|401|403)$ ]]; then echo "API awake"; break; fi
-            [[ $pf -lt 5 ]] && sleep 15
-          done
-          echo "::endgroup::"
-
           while IFS= read -r dir; do
             [[ -n "$dir" ]] || continue
             echo "::group::Reviewing ${dir}"
-            safe="$(printf '%s' "$dir" | tr '/.' '___')"
-            review_output="$REPORT_DIR/review-output-${safe}.md"
             cd source
             if [[ "$dir" == "(root-files)" ]]; then
-              git diff "${{ steps.range.outputs.base_sha }}" "${{ steps.range.outputs.head_sha }}" -- ':!*/Source/*' ':!*/Plugins/*' > /tmp/chunk-diff.txt 2>/dev/null
+              coderabbit review --base-commit "${{ steps.range.outputs.base_sha }}" --agent > /tmp/review-output.jsonl 2>/tmp/review-stderr.log
             else
-              git diff "${{ steps.range.outputs.base_sha }}" "${{ steps.range.outputs.head_sha }}" -- "$dir/" > /tmp/chunk-diff.txt 2>/dev/null
+              coderabbit review --dir "$dir" --base-commit "${{ steps.range.outputs.base_sha }}" --agent > /tmp/review-output.jsonl 2>/tmp/review-stderr.log
             fi
-            cd ..
-            head -c 200000 /tmp/chunk-diff.txt > /tmp/chunk-diff-trim.txt
-            if [[ ! -s /tmp/chunk-diff-trim.txt ]]; then
-              echo "No diff for ${dir}, skipping"
-              printf '%s\tsuccess\n' "$dir" >> "$REPORT_DIR/chunk-status.tsv"
-              echo "::endgroup::"
-              continue
-            fi
-            {
-              echo "Review this git diff for correctness bugs, build safety, CI/CD, secrets leakage, and supply-chain risks."
-              echo "Focus on high-confidence issues only."
-              echo "Output Markdown with: Summary, Findings (file/path + severity Critical/High/Medium/Low)."
-              echo "Skip style-only items."
-              echo ""
-              echo "Directory: ${dir}"
-              echo ""
-              echo "--- DIFF ---"
-              cat /tmp/chunk-diff-trim.txt
-            } > /tmp/review-prompt.txt
-            ( while true; do curl -sS -o /dev/null --max-time 10 -H "Authorization: Bearer ${AI_KEY}" "${AI_URL}/models" 2>/dev/null || true; sleep 25; done ) &
-            KEEPALIVE_PID=$!
-            claude -p "$(cat /tmp/review-prompt.txt)" --output-format text --verbose > "$review_output" 2>/tmp/claude-stderr.log
             rc=$?
-            kill "$KEEPALIVE_PID" 2>/dev/null || true
-            wait "$KEEPALIVE_PID" 2>/dev/null || true
+            cd ..
             if [[ $rc -ne 0 ]]; then
               echo "Review failed (exit ${rc})"
-              tail -n 30 /tmp/claude-stderr.log 2>/dev/null || true
+              tail -n 20 /tmp/review-stderr.log 2>/dev/null || true
               failed=1
               printf '%s\tfailure:%s\n' "$dir" "$rc" >> "$REPORT_DIR/chunk-status.tsv"
             else
               printf '%s\tsuccess\n' "$dir" >> "$REPORT_DIR/chunk-status.tsv"
-              if [[ -s "$review_output" ]]; then
-                cp "$review_output" "$REPORT_DIR/issue-bodies/${safe}.md"
-              fi
+              safe="$(printf '%s' "$dir" | tr '/.' '___')"
+              python3 - "$dir" "$REPORT_DIR/issue-bodies/${safe}.md" <<'PYEOF'
+          import json, sys
+          from pathlib import Path
+          p = Path('/tmp/review-output.jsonl')
+          out = Path(sys.argv[2])
+          findings = []
+          complete = None
+          if p.exists():
+              for line in p.read_text(encoding='utf-8', errors='replace').splitlines():
+                  line = line.strip()
+                  if not line:
+                      continue
+                  try:
+                      ev = json.loads(line)
+                  except json.JSONDecodeError:
+                      continue
+                  if ev.get('type') == 'finding':
+                      findings.append(ev)
+                  elif ev.get('type') == 'complete':
+                      complete = ev
+          if not findings:
+              sys.exit(0)
+          with open(str(out), 'w', encoding='utf-8') as f:
+              f.write(f'# Automated Review: {sys.argv[1]}\n\n')
+              f.write(f'Found {len(findings)} finding(s).\n\n')
+              for item in findings:
+                  sev = item.get('severity', 'unknown')
+                  fn = item.get('fileName', 'unknown')
+                  instr = (item.get('codegenInstructions') or '').strip()
+                  f.write(f'- **{sev}** `{fn}`\n')
+                  if instr:
+                      for para in instr.split('\n\n'):
+                          para = para.strip()
+                          if para:
+                              f.write(f'\n  {para}\n')
+                      f.write('\n')
+          PYEOF
             fi
             echo "::endgroup::"
           done < "$REPORT_DIR/selected-chunks.txt"
@@ -335,8 +317,8 @@ jobs:
             echo "{\"next_chunk_index\":${next},\"total_chunks\":${total},\"completed\":${completed},\"head_sha\":\"${{ steps.range.outputs.head_sha }}\",\"base_sha\":\"${{ steps.range.outputs.base_sha }}\",\"run_id\":\"${GITHUB_RUN_ID}\",\"updated_at\":\"$(date -u +%FT%TZ)\"}"
             echo '```'
           } > "$body_file"
-          issue="$(gh issue list --state all --search "$title in:title" --json number,title --jq '.[] | select(.title == "Full Scan State") | .number' | head -n 1)"
-          if [[ -z "$issue" ]]; then gh issue create --title "$title" --body-file "$body_file" >/dev/null; else gh issue edit "$issue" --body-file "$body_file"; gh issue reopen "$issue" || true; fi
+          issue="$(gh issue list -R "$GITHUB_REPOSITORY" --state all --search "$title in:title" --json number,title --jq '.[] | select(.title == "Full Scan State") | .number' | head -n 1)"
+          if [[ -z "$issue" ]]; then gh issue create -R "$GITHUB_REPOSITORY" --title "$title" --body-file "$body_file" >/dev/null; else gh issue edit "$issue" -R "$GITHUB_REPOSITORY" --body-file "$body_file"; gh issue reopen "$issue" -R "$GITHUB_REPOSITORY" || true; fi
 
       - name: Seed incremental state when full scan completes
         if: success() && steps.interval_guard.outputs.skip != 'true' && steps.review.outputs.failed != '1' && steps.range.outputs.end_index == steps.range.outputs.total_chunks
@@ -356,8 +338,8 @@ jobs:
             echo "{\"last_completed_sha\":\"${{ steps.range.outputs.head_sha }}\",\"base_sha\":\"${{ steps.range.outputs.base_sha }}\",\"mode\":\"full-root-to-head-completed\",\"run_id\":\"${GITHUB_RUN_ID}\",\"updated_at\":\"$(date -u +%FT%TZ)\"}"
             echo '```'
           } > "$body_file"
-          issue="$(gh issue list -R "$SOURCE_REPO" --state all --search "$title in:title" --json number,title --jq '.[] | select(.title == "Incremental Scan State") | .number' | head -n 1)"
-          if [[ -z "$issue" ]]; then gh issue create --title "$title" --body-file "$body_file" >/dev/null; else gh issue edit "$issue" --body-file "$body_file"; gh issue reopen "$issue" || true; fi
+          issue="$(gh issue list -R "$GITHUB_REPOSITORY" --state all --search "$title in:title" --json number,title --jq '.[] | select(.title == "Incremental Scan State") | .number' | head -n 1)"
+          if [[ -z "$issue" ]]; then gh issue create -R "$GITHUB_REPOSITORY" --title "$title" --body-file "$body_file" >/dev/null; else gh issue edit "$issue" -R "$GITHUB_REPOSITORY" --body-file "$body_file"; gh issue reopen "$issue" -R "$GITHUB_REPOSITORY" || true; fi
 
       - name: Cleanup
         if: always()
