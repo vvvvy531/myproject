@@ -136,8 +136,11 @@ jobs:
           for d in sorted(root.rglob('Plugins')):
               if d.is_dir() and not any(part in excluded_names for part in d.parts):
                   for ps in sorted(d.glob('*/Source')):
-                      if ps.is_dir() and not is_third_party_plugin(ps.parent):
-                          plugins_source.append(ps)
+                      if ps.is_dir():
+                          if is_third_party_plugin(ps.parent):
+                              print(f'THIRD-PARTY EXCLUDED: {ps.parent}', file=__import__('sys').stderr)
+                          else:
+                              plugins_source.append(ps)
           seen = set()
           all_source = []
           for d in source_dirs + [s for s in plugins_source if s.is_dir()]:
