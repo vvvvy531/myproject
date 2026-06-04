@@ -3,62 +3,39 @@ name: Automated PR Review C
 on:
   repository_dispatch:
     types: [private-review-c]
-  workflow_dispatch:
-    inputs:
-      source_repo:
-        description: Source repo
-        required: true
-        default: vvvvy531/myproject-source
-      pr_number:
-        description: PR number
-        required: true
-      head_sha:
-        description: Optional head SHA
-        required: false
-      base_ref:
-        description: Optional base ref
-        required: false
-        default: main
-      title:
-        description: Optional PR title
-        required: false
 
 permissions:
   contents: read
+
+concurrency:
+  group: review-c-${{ github.event.client_payload.source_repo }}-${{ github.event.client_payload.pr_number }}
+  cancel-in-progress: true
 
 env:
   SCRIPTS_REF: main
   ARTIFACT_REPO: vvvvy531/myproject-linux-builds
 
-concurrency:
-  group: review-c-${{ github.event.client_payload.source_repo || inputs.source_repo }}-${{ github.event.client_payload.pr_number || inputs.pr_number }}
-  cancel-in-progress: true
-
 jobs:
   review:
+    name: Automated PR Review
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      SOURCE_REPO: ${{ github.event.client_payload.source_repo || inputs.source_repo }}
-      PR_NUMBER: ${{ github.event.client_payload.pr_number || inputs.pr_number }}
-      HEAD_SHA: ${{ github.event.client_payload.head_sha || inputs.head_sha }}
-      BASE_REF: ${{ github.event.client_payload.base_ref || inputs.base_ref || 'main' }}
-      PR_TITLE: ${{ github.event.client_payload.title || inputs.title }}
-      REVIEW_AI_IMAGE: ${{ secrets.REVIEW_AI_IMAGE }}
-      CONFIG_BUNDLE_REPO: vvvvy531/myproject-linux-builds
-      CONFIG_BUNDLE_REF: main
-      CONFIG_BUNDLE_PATH: review-config-bundle.tar.gz
-      REVIEW_FOCUS: |
-        Review this Unreal Engine private source pull request.
-        Focus only on high-confidence correctness bugs, Linux build safety, Unreal build issues, CI/CD, release artifacts, shell commands, secrets leakage, permissions, and supply-chain risks.
-        Do not suggest broad refactors or style-only changes.
+      SOURCE_REPO: ${{ github.event.client_payload.source_repo }}
+      PR_NUMBER: ${{ github.event.client_payload.pr_number }}
+      HEAD_SHA: ${{ github.event.client_payload.head_sha }}
     steps:
       - name: Validate PR payload
         shell: bash
         run: |
           set -euo pipefail
-          case "$SOURCE_REPO" in ""|*" "*|*".."*|*"//"*) echo "Invalid" >&2; exit 1 ;; esac
-          case "$PR_NUMBER" in ''|*[!0-9]*) echo "Invalid" >&2; exit 1 ;; esac
+          case "$SOURCE_REPO" in
+            vvvvy531/myproject-source) ;;
+            *) echo "Invalid source_repo payload" >&2; exit 1 ;;
+          esac
+          case "$PR_NUMBER" in
+            ''|*[!0-9]*) echo "Invalid pr_number payload" >&2; exit 1 ;;
+          esac
           echo "Review target: ${SOURCE_REPO}#${PR_NUMBER}"
 
       - name: Mark review pending
@@ -69,38 +46,39 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set +x
-          gh api --method POST "repos/${SOURCE_REPO}/statuses/${HEAD_SHA}" \
-            -f state=pending -f context='Public AI PR Review' \
-            -f description='Review in progress' -f target_url="$RUN_URL"
+          gh api "repos/${SOURCE_REPO}/statuses/${HEAD_SHA}" \
+            -f state=pending -f context="Public AI PR Review" \
+            -f description="AI review in progress" -f target_url="$RUN_URL"
 
       - name: Execute AI review
+        id: review
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
+          GITHUB_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
           AI_KEY: ${{ secrets.REVIEW_PROXY_KEY }}
           AI_URL: ${{ secrets.REVIEW_PROXY_URL }}
           AI_MODEL: ${{ secrets.REVIEW_MODEL || 'latest-sonnet' }}
-          DOCKER_IMAGE: ${{ secrets.REVIEW_AI_IMAGE }}
-          BUNDLE_TOKEN: ${{ secrets.LINUX_BUILDS_PAT }}
-          BUNDLE_REPO: ${{ env.CONFIG_BUNDLE_REPO }}
-          BUNDLE_REF: ${{ env.CONFIG_BUNDLE_REF }}
-          BUNDLE_PATH: ${{ env.CONFIG_BUNDLE_PATH }}
+          ARTIFACT_TOKEN: ${{ secrets.LINUX_BUILDS_PAT }}
+          ARTIFACT_REPO: ${{ env.ARTIFACT_REPO }}
           SOURCE_REPO: ${{ env.SOURCE_REPO }}
           PR_NUMBER: ${{ env.PR_NUMBER }}
-          HEAD_SHA: ${{ env.HEAD_SHA }}
-          PR_TITLE: ${{ env.PR_TITLE }}
-          REVIEW_FOCUS: ${{ env.REVIEW_FOCUS }}
-          GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
-          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
-          ARTIFACT_REPO: ${{ vars.ARTIFACT_REPO || 'vvvvy531/myproject-linux-builds' }}
+          SCRIPTS_REF: ${{ env.SCRIPTS_REF }}
+          REVIEW_FOCUS: |
+            Review this Unreal Engine private source pull request.
+            Focus only on high-confidence correctness bugs, Linux build safety, Unreal build issues, CI/CD, release artifacts, shell commands, secrets leakage, permissions, and supply-chain risks.
+            Do not suggest broad refactors or style-only changes.
         run: |
-          set -euo pipefail
-          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USERNAME" --password-stdin
+          set +x
+          set +e
           gh api -H 'Accept: application/vnd.github.raw' \
-            "repos/${ARTIFACT_REPO}/contents/ci-scripts/run-docker-review.sh?ref=${SCRIPTS_REF}" \
-            > /tmp/_docker_review.sh
-          bash /tmp/_docker_review.sh
-          rm -f /tmp/_docker_review.sh
+            "repos/${ARTIFACT_REPO}/contents/ci-scripts/run-claude-review.sh?ref=${SCRIPTS_REF}" \
+            > /tmp/_run_claude_review.sh
+          bash /tmp/_run_claude_review.sh
+          status=$?
+          rm -f /tmp/_run_claude_review.sh
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          exit "$status"
 
       - name: Mark review result
         if: always() && env.HEAD_SHA != ''
@@ -112,12 +90,12 @@ jobs:
         run: |
           set +x
           if [[ "$JOB_STATUS" == "success" ]]; then
-            state=success; description='Review completed'
+            state=success; description="AI review completed"
           else
-            state=failure; description='Review failed'
+            state=failure; description="AI review failed"
           fi
-          gh api --method POST "repos/${SOURCE_REPO}/statuses/${HEAD_SHA}" \
-            -f state="$state" -f context='Public AI PR Review' \
+          gh api "repos/${SOURCE_REPO}/statuses/${HEAD_SHA}" \
+            -f state="$state" -f context="Public AI PR Review" \
             -f description="$description" -f target_url="$RUN_URL"
 
       - name: Cleanup
