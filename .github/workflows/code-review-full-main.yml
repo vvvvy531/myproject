@@ -205,8 +205,7 @@ jobs:
 
           echo "::group::Preflight"
           for pf in 1 2 3 4 5; do
-            http_code=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 30 \
-              -H "Authorization: Bearer ${AI_KEY}" "${AI_URL}/models" 2>/dev/null) || http_code="000"
+            http_code=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 30 -H "Authorization: Bearer ${AI_KEY}" "${AI_URL}/models" 2>/dev/null) || http_code="000"
             if [[ "$http_code" =~ ^(200|301|302|401|403)$ ]]; then echo "API awake"; break; fi
             [[ $pf -lt 5 ]] && sleep 15
           done
@@ -217,39 +216,37 @@ jobs:
             echo "::group::Reviewing ${dir}"
             safe="$(printf '%s' "$dir" | tr '/.' '___')"
             review_output="$REPORT_DIR/review-output-${safe}.md"
-
             cd source
             if [[ "$dir" == "(root-files)" ]]; then
-              diff_content="$(git diff "${{ steps.range.outputs.base_sha }}" "${{ steps.range.outputs.head_sha }}" -- ':!*/Source/*' ':!*/Plugins/*' 2>/dev/null | head -c 200000)"
+              git diff "${{ steps.range.outputs.base_sha }}" "${{ steps.range.outputs.head_sha }}" -- ':!*/Source/*' ':!*/Plugins/*' > /tmp/chunk-diff.txt 2>/dev/null
             else
-              diff_content="$(git diff "${{ steps.range.outputs.base_sha }}" "${{ steps.range.outputs.head_sha }}" -- "$dir/" 2>/dev/null | head -c 200000)"
+              git diff "${{ steps.range.outputs.base_sha }}" "${{ steps.range.outputs.head_sha }}" -- "$dir/" > /tmp/chunk-diff.txt 2>/dev/null
             fi
             cd ..
-
-            if [[ -z "$diff_content" ]]; then
+            head -c 200000 /tmp/chunk-diff.txt > /tmp/chunk-diff-trim.txt
+            if [[ ! -s /tmp/chunk-diff-trim.txt ]]; then
               echo "No diff for ${dir}, skipping"
               printf '%s\tsuccess\n' "$dir" >> "$REPORT_DIR/chunk-status.tsv"
               echo "::endgroup::"
               continue
             fi
-
-            prompt="Review this git diff for correctness bugs, build safety, CI/CD, secrets leakage, and supply-chain risks. Focus on high-confidence issues only. Output Markdown with: Summary, Findings (file/path + severity Critical/High/Medium/Low). Skip style-only items.
-
-Directory: ${dir}
-
---- DIFF ---
-${diff_content}"
-
+            {
+              echo "Review this git diff for correctness bugs, build safety, CI/CD, secrets leakage, and supply-chain risks."
+              echo "Focus on high-confidence issues only."
+              echo "Output Markdown with: Summary, Findings (file/path + severity Critical/High/Medium/Low)."
+              echo "Skip style-only items."
+              echo ""
+              echo "Directory: ${dir}"
+              echo ""
+              echo "--- DIFF ---"
+              cat /tmp/chunk-diff-trim.txt
+            } > /tmp/review-prompt.txt
             ( while true; do curl -sS -o /dev/null --max-time 10 -H "Authorization: Bearer ${AI_KEY}" "${AI_URL}/models" 2>/dev/null || true; sleep 25; done ) &
             KEEPALIVE_PID=$!
-
-            claude -p "$prompt" --output-format text --verbose \
-              > "$review_output" 2>/tmp/claude-stderr.log
+            claude -p "$(cat /tmp/review-prompt.txt)" --output-format text --verbose > "$review_output" 2>/tmp/claude-stderr.log
             rc=$?
-
             kill "$KEEPALIVE_PID" 2>/dev/null || true
             wait "$KEEPALIVE_PID" 2>/dev/null || true
-
             if [[ $rc -ne 0 ]]; then
               echo "Review failed (exit ${rc})"
               tail -n 30 /tmp/claude-stderr.log 2>/dev/null || true
