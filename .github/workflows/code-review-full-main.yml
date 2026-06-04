@@ -14,6 +14,10 @@ permissions:
   contents: read
   issues: write
 
+concurrency:
+  group: full-scan-main
+  cancel-in-progress: false
+
 env:
   SOURCE_REPO: vvvvy531/myproject-source
   ARTIFACT_REPO: vvvvy531/myproject-linux-builds
@@ -37,7 +41,7 @@ jobs:
 
       - name: Checkout private source main
         if: steps.interval_guard.outputs.skip != 'true'
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           repository: ${{ env.SOURCE_REPO }}
           token: ${{ secrets.PRIVATE_SOURCE_PAT }}
@@ -88,7 +92,7 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
-          PUBLIC_GH_TOKEN: ${{ github.token }}
+          
           RESET_SCAN: ${{ inputs.reset || 'false' }}
         run: |
           set -euo pipefail
@@ -115,7 +119,13 @@ jobs:
           for d in sorted(root.rglob('Plugins')):
               if d.is_dir() and not any(part in excluded_names for part in d.parts):
                   plugins_source.extend(sorted(d.glob('*/Source')))
-          all_source = source_dirs + [s for s in plugins_source if s.is_dir()]
+          seen = set()
+          all_source = []
+          for d in source_dirs + [s for s in plugins_source if s.is_dir()]:
+              rp = str(d.resolve())
+              if rp not in seen:
+                  seen.add(rp)
+                  all_source.append(d)
           for sd in all_source:
               rel = str(sd.relative_to(root))
               n = count_code_files(sd)
@@ -138,9 +148,9 @@ jobs:
           PY
           next_index=0
           state_title='Full Scan State'
-          issue="$(GH_TOKEN="$PUBLIC_GH_TOKEN" gh issue list -R "$GITHUB_REPOSITORY" --state all --search "$state_title in:title" --json number,title --jq '.[] | select(.title == "Full Scan State") | .number' | head -n 1)"
+          issue="$(gh issue list -R "$SOURCE_REPO" --state all --search "$state_title in:title" --json number,title --jq '.[] | select(.title == "Full Scan State") | .number' | head -n 1)"
           if [[ "$RESET_SCAN" != "true" && -n "$issue" ]]; then
-            GH_TOKEN="$PUBLIC_GH_TOKEN" gh issue view "$issue" -R "$GITHUB_REPOSITORY" --json body --jq .body > /tmp/scan-state.md || true
+            gh issue view "$issue" -R "$SOURCE_REPO" --json body --jq .body > /tmp/scan-state.md || true
             next_index="$(python3 - <<'PY'
           import json,re,pathlib
           s=pathlib.Path('/tmp/scan-state.md').read_text(errors='ignore') if pathlib.Path('/tmp/scan-state.md').exists() else ''
@@ -237,7 +247,7 @@ jobs:
         if: success() && steps.interval_guard.outputs.skip != 'true'
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
         run: |
           set -euo pipefail
           next="$(python3 - <<'PY'
@@ -271,8 +281,8 @@ jobs:
             echo "{\"next_chunk_index\":${next},\"total_chunks\":${total},\"completed\":${completed},\"head_sha\":\"${{ steps.range.outputs.head_sha }}\",\"base_sha\":\"${{ steps.range.outputs.base_sha }}\",\"run_id\":\"${GITHUB_RUN_ID}\",\"updated_at\":\"$(date -u +%FT%TZ)\"}"
             echo '```'
           } > "$body_file"
-          issue="$(gh issue list -R "$GITHUB_REPOSITORY" --state all --search "$title in:title" --json number,title --jq '.[] | select(.title == "Full Scan State") | .number' | head -n 1)"
-          if [[ -z "$issue" ]]; then gh issue create -R "$GITHUB_REPOSITORY" --title "$title" --body-file "$body_file" >/dev/null; else gh issue edit "$issue" -R "$GITHUB_REPOSITORY" --body-file "$body_file"; gh issue reopen "$issue" -R "$GITHUB_REPOSITORY" || true; fi
+          issue="$(gh issue list -R "$SOURCE_REPO" --state all --search "$title in:title" --json number,title --jq '.[] | select(.title == "Full Scan State") | .number' | head -n 1)"
+          if [[ -z "$issue" ]]; then gh issue create -R "$SOURCE_REPO" --title "$title" --body-file "$body_file" >/dev/null; else gh issue edit "$issue" -R "$SOURCE_REPO" --body-file "$body_file"; gh issue reopen "$issue" -R "$SOURCE_REPO" || true; fi
 
       - name: Seed incremental state when full scan completes
         if: success() && steps.interval_guard.outputs.skip != 'true' && steps.review.outputs.failed != '1' && steps.range.outputs.end_index == steps.range.outputs.total_chunks

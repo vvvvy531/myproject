@@ -106,7 +106,7 @@ jobs:
           rm -f /tmp/review-account.env "$state_file"
 
       - name: Checkout private source
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           repository: ${{ env.SOURCE_REPO }}
           token: ${{ secrets.PRIVATE_SOURCE_PAT }}

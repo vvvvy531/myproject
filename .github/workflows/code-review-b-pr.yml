@@ -38,6 +38,7 @@ jobs:
       PR_NUMBER: ${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.event.client_payload.pr_number || inputs.pr_number }}
       PR_URL: ${{ github.event_name == 'pull_request' && github.event.pull_request.html_url || format('https://github.com/{0}/pull/{1}', github.event.client_payload.source_repo || inputs.source_repo, github.event.client_payload.pr_number || inputs.pr_number) }}
       HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.event.client_payload.head_sha || inputs.head_sha }}
+      ARTIFACT_REPO: vvvvy531/myproject-linux-builds
     steps:
       - name: Validate PR payload
         shell: bash
@@ -61,7 +62,7 @@ jobs:
 
       - name: Checkout public PR
         if: github.event_name == 'pull_request'
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           fetch-depth: 0
           path: source
@@ -69,7 +70,7 @@ jobs:
 
       - name: Checkout private source
         if: github.event_name != 'pull_request'
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           repository: ${{ env.SOURCE_REPO }}
           token: ${{ secrets.PRIVATE_SOURCE_PAT }}

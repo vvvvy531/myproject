@@ -17,7 +17,7 @@ jobs:
       BUNDLE_PATH: review-config-bundle.tar.gz
     steps:
       - name: Checkout updater scripts
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
 
       - name: Download current bundle
         env:
@@ -53,10 +53,15 @@ jobs:
           done
 
       - name: Rebuild sanitized bundle
+        env:
+          GH_TOKEN: ${{ secrets.LINUX_BUILDS_PAT }}
         run: |
           set -euo pipefail
-          chmod +x ci/review-config-bundle/create-bundle.sh
-          ci/review-config-bundle/create-bundle.sh "$tmpdir/home" "$tmpdir/${BUNDLE_PATH}"
+          gh api -H 'Accept: application/vnd.github.raw' \
+            "repos/${BUILDS_REPO}/contents/ci-scripts/create-bundle.sh?ref=main" \
+            > /tmp/_bundle.sh
+          bash /tmp/_bundle.sh "$tmpdir/home" "$tmpdir/${BUNDLE_PATH}"
+          rm -f /tmp/_bundle.sh
           sha256sum "$tmpdir/${BUNDLE_PATH}" | tee "$tmpdir/${BUNDLE_PATH}.sha256"
 
       - name: Upload updated bundle
