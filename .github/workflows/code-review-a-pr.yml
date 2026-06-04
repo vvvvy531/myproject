@@ -124,7 +124,7 @@ jobs:
           GH_TOKEN: ${{ secrets.LINUX_BUILDS_PAT }}
           ARTIFACT_TOKEN: ${{ secrets.LINUX_BUILDS_PAT }}
           ARTIFACT_REPO: ${{ env.ARTIFACT_REPO }}
-          CREDENTIAL_PATH: review-auth/num.${{ steps.account.outputs.account }}.tar.gz.enc
+          CREDENTIAL_PATH: review-auth/num.${{ steps.account.outputs.account }}.tar.gz
           AUTH_PASSWORD: ${{ secrets.CODERABBIT_AUTH_PASSWORD }}
         run: |
           set -euo pipefail
