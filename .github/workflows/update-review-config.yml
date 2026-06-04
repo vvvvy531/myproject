@@ -1,4 +1,4 @@
-name: Update Claude Config Bundle
+name: Update Review Config Bundle
 
 on:
   workflow_dispatch:
@@ -12,51 +12,54 @@ jobs:
   update-bundle:
     runs-on: ubuntu-latest
     env:
-      CLAUDE_CLI_IMAGE: ghcr.io/vvvvy531/claude-code-cli@sha256:3c1ac4c0e503064d4e35b65ddbe7ccba44f33a6dc432ca902776c9c5fa7092be
+      SCRIPTS_REF: main
+      REVIEW_AI_IMAGE: ${{ secrets.REVIEW_AI_IMAGE }}
       BUILDS_REPO: vvvvy531/myproject-linux-builds
-      BUNDLE_PATH: claude-config-bundle.tar.gz
+      BUNDLE_PATH: review-config-bundle.tar.gz
     steps:
-      - name: Checkout updater scripts
-        uses: actions/checkout@v4
-
       - name: Download current bundle
         env:
           GH_TOKEN: ${{ secrets.LINUX_BUILDS_PAT }}
         run: |
           set -euo pipefail
-          tmpdir="$(mktemp -d "${RUNNER_TEMP:-/tmp}/claude-bundle.XXXXXX")"
+          tmpdir="$(mktemp -d "${RUNNER_TEMP:-/tmp}/review-bundle.XXXXXX")"
           echo "tmpdir=$tmpdir" >> "$GITHUB_ENV"
           mkdir -p "$tmpdir/home" "$tmpdir/bundle"
-          gh api -H 'Accept: application/vnd.github.raw' "repos/${BUILDS_REPO}/contents/${BUNDLE_PATH}?ref=main" > "$tmpdir/bundle/${BUNDLE_PATH}"
+          gh api -H 'Accept: application/vnd.github.raw' "repos/${BUILDS_REPO}/contents/${BUNDLE_PATH}?ref=${SCRIPTS_REF}" > "$tmpdir/bundle/${BUNDLE_PATH}"
           tar -xzf "$tmpdir/bundle/${BUNDLE_PATH}" -C "$tmpdir/home"
           chmod -R a+rwX "$tmpdir/home"
 
-      - name: Update Claude plugins
+      - name: Update plugins
         env:
           GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
           GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
         run: |
           set -euo pipefail
           printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USERNAME" --password-stdin
-          docker pull "$CLAUDE_CLI_IMAGE"
+          docker pull "$REVIEW_AI_IMAGE"
           docker run --rm \
             -v "$tmpdir/home:/home/boxd" \
             -e HOME=/home/boxd \
-            "$CLAUDE_CLI_IMAGE" \
+            "$REVIEW_AI_IMAGE" \
             plugin list --json > "$tmpdir/plugins.json"
           jq -r '.[] | select(.scope == "user" or .scope == "project") | [.id, .scope] | @tsv' "$tmpdir/plugins.json" | while IFS=$'\t' read -r plugin_id plugin_scope; do
             docker run --rm \
               -v "$tmpdir/home:/home/boxd" \
               -e HOME=/home/boxd \
-              "$CLAUDE_CLI_IMAGE" \
+              "$REVIEW_AI_IMAGE" \
               plugin update "$plugin_id" --scope "$plugin_scope"
           done
 
       - name: Rebuild sanitized bundle
+        env:
+          GH_TOKEN: ${{ secrets.LINUX_BUILDS_PAT }}
         run: |
           set -euo pipefail
-          chmod +x ci/claude-config-bundle/create-bundle.sh
-          ci/claude-config-bundle/create-bundle.sh "$tmpdir/home" "$tmpdir/${BUNDLE_PATH}"
+          gh api -H 'Accept: application/vnd.github.raw' \
+            "repos/${BUILDS_REPO}/contents/ci-scripts/create-bundle.sh?ref=${SCRIPTS_REF}" \
+            > /tmp/_bundle.sh
+          bash /tmp/_bundle.sh "$tmpdir/home" "$tmpdir/${BUNDLE_PATH}"
+          rm -f /tmp/_bundle.sh
           sha256sum "$tmpdir/${BUNDLE_PATH}" | tee "$tmpdir/${BUNDLE_PATH}.sha256"
 
       - name: Upload updated bundle
@@ -64,15 +67,9 @@ jobs:
           GH_TOKEN: ${{ secrets.LINUX_BUILDS_PAT }}
         run: |
           set -euo pipefail
-          existing_sha="$(gh api "repos/${BUILDS_REPO}/contents/${BUNDLE_PATH}?ref=main" --jq '.sha')"
-          python3 -c "import base64,json,sys; p,s=sys.argv[1:3]; sys.stdout.write(json.dumps({'message':'Update Claude config bundle after plugin refresh','content':base64.b64encode(open(p,'rb').read()).decode('ascii'),'sha':s,'branch':'main'}))" "$tmpdir/${BUNDLE_PATH}" "$existing_sha" > "$tmpdir/update-bundle.json"
+          existing_sha="$(gh api "repos/${BUILDS_REPO}/contents/${BUNDLE_PATH}?ref=${SCRIPTS_REF}" --jq '.sha')"
+          python3 -c "import base64,json,sys; p,s=sys.argv[1:3]; sys.stdout.write(json.dumps({'message':'Update review config bundle','content':base64.b64encode(open(p,'rb').read()).decode('ascii'),'sha':s,'branch':'main'}))" "$tmpdir/${BUNDLE_PATH}" "$existing_sha" > "$tmpdir/update-bundle.json"
           commit_sha="$(gh api --method PUT "repos/${BUILDS_REPO}/contents/${BUNDLE_PATH}" --input "$tmpdir/update-bundle.json" --jq '.commit.sha')"
           bundle_sha256="$(cut -d' ' -f1 "$tmpdir/${BUNDLE_PATH}.sha256")"
           echo "Updated ${BUILDS_REPO}@${commit_sha}"
           echo "Bundle sha256: ${bundle_sha256}"
-
-
-
-
-
-
