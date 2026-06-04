@@ -138,7 +138,7 @@ jobs:
                   for ps in sorted(d.glob('*/Source')):
                       if ps.is_dir():
                           if is_third_party_plugin(ps.parent):
-                              print(f'THIRD-PARTY EXCLUDED: {ps.parent}', file=__import__('sys').stderr)
+                              __import__('pathlib').Path('/tmp/third-party-excluded.txt').open('a').write(f'{ps.parent.name}\n')
                           else:
                               plugins_source.append(ps)
           seen = set()
@@ -168,6 +168,9 @@ jobs:
           for c in chunks:
               print(c)
           PY
+          echo "=== Third-party excluded plugins ==="
+          cat /tmp/third-party-excluded.txt 2>/dev/null || echo "(none)"
+          echo "=== Total chunks: $(wc -l < "$REPORT_DIR/all-chunks.txt") ==="
           next_index=0
           state_title='Full Scan State'
           issue="$(GH_TOKEN="$PUBLIC_TOKEN" gh issue list -R "$GITHUB_REPOSITORY" --state all --search "$state_title in:title" --json number,title --jq '.[] | select(.title == "Full Scan State") | .number' | head -n 1)"
