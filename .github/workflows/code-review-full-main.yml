@@ -127,21 +127,34 @@ jobs:
                   return True
               if 'README.md' in names and any(n.endswith('.uplugin') for n in names):
                   return True
+              known = {'FlatBuffers', 'FastNoise2', 'WFC++', 'voronoi-0.9.0', 'usearch_windows_x64_2.22.0'}
+              if plugin_dir.name in known:
+                  return True
               return False
           def count_code_files(p):
               return sum(1 for f in p.rglob('*') if f.is_file() and f.suffix in code_suffixes)
           chunks = []
-          source_dirs = sorted([d for d in root.rglob('Source') if d.is_dir() and not any(part in excluded_names for part in d.parts)])
+          # First pass: identify third-party plugin directories
+          excluded_plugin_names = set()
+          for d in sorted(root.rglob('Plugins')):
+              if d.is_dir() and not any(part in excluded_names for part in d.parts):
+                  for ps in sorted(d.iterdir()):
+                      if ps.is_dir() and is_third_party_plugin(ps):
+                          excluded_plugin_names.add(ps.name)
+          # Filter source_dirs to exclude third-party plugin Source dirs
+          def _under_excluded(path):
+              parts = list(path.parts)
+              for j, part in enumerate(parts):
+                  if part == 'Plugins' and j + 1 < len(parts):
+                      return parts[j+1] in excluded_plugin_names
+              return False
+          source_dirs = sorted([d for d in root.rglob('Source') if d.is_dir() and not any(part in excluded_names for part in d.parts) and not _under_excluded(d)])
           plugins_source = []
           for d in sorted(root.rglob('Plugins')):
               if d.is_dir() and not any(part in excluded_names for part in d.parts):
                   for ps in sorted(d.glob('*/Source')):
-                      if ps.is_dir():
-                          if is_third_party_plugin(ps.parent):
-                              __import__('pathlib').Path('/tmp/third-party-excluded.txt').open('a').write(f'{ps.parent.name}\n')
-                          else:
-                              __import__('pathlib').Path('/tmp/third-party-kept.txt').open('a').write(f'{ps.parent.name}: {sorted(f.name for f in ps.parent.iterdir() if f.is_file())}\n')
-                              plugins_source.append(ps)
+                      if ps.is_dir() and ps.parent.name not in excluded_plugin_names:
+                          plugins_source.append(ps)
           seen = set()
           all_source = []
           for d in source_dirs + [s for s in plugins_source if s.is_dir()]:
@@ -163,17 +176,14 @@ jobs:
                               chunks.append(str(sub.relative_to(root)))
                   else:
                       chunks.append(rel)
+          if excluded_plugin_names:
+              __import__('pathlib').Path('/tmp/third-party-excluded.txt').open('w').write('\n'.join(sorted(excluded_plugin_names)) + '\n')
           top_files = [str(f.relative_to(root)) for f in root.iterdir() if f.is_file() and f.suffix in code_suffixes]
           if top_files:
               chunks.append('(root-files)')
           for c in chunks:
               print(c)
           PY
-          echo "=== Third-party excluded plugins ==="
-          cat /tmp/third-party-excluded.txt 2>/dev/null || echo "(none)"
-          echo "=== Third-party KEPT plugins ==="
-          cat /tmp/third-party-kept.txt 2>/dev/null || echo "(none)"
-          echo "=== Total chunks: $(wc -l < "$REPORT_DIR/all-chunks.txt") ==="
           next_index=0
           state_title='Full Scan State'
           issue="$(GH_TOKEN="$PUBLIC_TOKEN" gh issue list -R "$GITHUB_REPOSITORY" --state all --search "$state_title in:title" --json number,title --jq '.[] | select(.title == "Full Scan State") | .number' | head -n 1)"
