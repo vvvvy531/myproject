@@ -140,6 +140,8 @@ jobs:
                           if is_third_party_plugin(ps.parent):
                               __import__('pathlib').Path('/tmp/third-party-excluded.txt').open('a').write(f'{ps.parent.name}\n')
                           else:
+                              __import__('pathlib').Path('/tmp/third-party-kept.txt').open('a').write(f'{ps.parent.name}: {sorted(f.name for f in ps.parent.iterdir() if f.is_file())}\n')
+                          else:
                               plugins_source.append(ps)
           seen = set()
           all_source = []
@@ -170,6 +172,8 @@ jobs:
           PY
           echo "=== Third-party excluded plugins ==="
           cat /tmp/third-party-excluded.txt 2>/dev/null || echo "(none)"
+          echo "=== Third-party KEPT plugins ==="
+          cat /tmp/third-party-kept.txt 2>/dev/null || echo "(none)"
           echo "=== Total chunks: $(wc -l < "$REPORT_DIR/all-chunks.txt") ==="
           next_index=0
           state_title='Full Scan State'
