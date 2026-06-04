@@ -127,7 +127,7 @@ jobs:
                   return True
               if 'README.md' in names and any(n.endswith('.uplugin') for n in names):
                   return True
-              known = {'FlatBuffers', 'FastNoise2', 'WFC++', 'voronoi-0.9.0', 'usearch_windows_x64_2.22.0'}
+              known = {'FlatBuffers', 'FastNoise2', 'WFC++', 'Flow', 'voronoi-0.9.0', 'usearch_windows_x64_2.22.0'}
               if plugin_dir.name in known:
                   return True
               return False
@@ -199,14 +199,58 @@ jobs:
           fi
           total="$(wc -l < "$REPORT_DIR/all-chunks.txt")"
           if (( next_index >= total )); then next_index=0; fi
-          max="$MAX_CHUNKS_PER_RUN"
-          end_index=$(( next_index + max ))
-          if (( end_index > total )); then end_index=$total; fi
-          sed -n "$(( next_index + 1 )),$(( end_index ))p" "$REPORT_DIR/all-chunks.txt" > "$REPORT_DIR/selected-chunks.txt"
+          export NEXT_INDEX="$next_index" TOTAL="$total"
+          gh issue list -R "$SOURCE_REPO" --state open --search 'Automated Review in:title' --json title --limit 200 > /tmp/open-issues.json 2>/dev/null || echo '[]' > /tmp/open-issues.json
+          python3 - <<'PY'
+          import os, json
+          max_chunks = int(os.environ.get('MAX_CHUNKS_PER_RUN', '3'))
+          next_index = int(os.environ.get('NEXT_INDEX', '0'))
+          total = int(os.environ.get('TOTAL', '0'))
+          chunks_file = os.path.join(os.environ['REPORT_DIR'], 'all-chunks.txt')
+          with open(chunks_file) as f:
+              chunks = [l.strip() for l in f if l.strip()]
+          open_issues_file = '/tmp/open-issues.json'
+          open_issues = []
+          if os.path.exists(open_issues_file):
+              try:
+                  with open(open_issues_file) as f:
+                      open_issues = json.load(f)
+              except json.JSONDecodeError:
+                  open_issues = []
+          blocked = set()
+          for iss in open_issues:
+              t = iss.get('title', '')
+              if t.startswith('Automated Review: '):
+                  blocked.add(t[len('Automated Review: '):])
+          selected = []
+          end = next_index
+          examined = 0
+          for i in range(total):
+              idx = (next_index + i) % total
+              examined += 1
+              if chunks[idx] not in blocked:
+                  selected.append(chunks[idx])
+                  if len(selected) >= max_chunks:
+                      end = (idx + 1) % total
+                      break
+              if examined >= total:
+                  end = (idx + 1) % total
+                  break
+          else:
+              end = next_index
+          out_file = os.path.join(os.environ['REPORT_DIR'], 'selected-chunks.txt')
+          with open(out_file, 'w') as f:
+              for c in selected:
+                  f.write(c + '\n')
+          print(f'Selected {len(selected)} chunks, {len(blocked)} blocked, next_index={end}')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f'end_index={end}\n')
+              f.write(f'selected_count={len(selected)}\n')
+              f.write(f'blocked_count={len(blocked)}\n')
+          PY
           echo "base_sha=${base_sha}" >> "$GITHUB_OUTPUT"
           echo "head_sha=${head_sha}" >> "$GITHUB_OUTPUT"
           echo "start_index=${next_index}" >> "$GITHUB_OUTPUT"
-          echo "end_index=${end_index}" >> "$GITHUB_OUTPUT"
           echo "total_chunks=${total}" >> "$GITHUB_OUTPUT"
 
       - name: Run full review on selected chunks
@@ -220,19 +264,9 @@ jobs:
           set +e
           failed=0
           mkdir -p "$REPORT_DIR/issue-bodies"
-          echo "Fetching open review issues..."
-          open_titles="$(gh issue list -R "$SOURCE_REPO" --state open --search 'Automated Review in:title' --json title --limit 200 --jq '.[].title' 2>/dev/null || true)"
-          echo "Found open issues: $(echo "$open_titles" | wc -l)"
           while IFS= read -r dir; do
             [[ -n "$dir" ]] || continue
             echo "::group::Reviewing ${dir}"
-            title="Automated Review: ${dir}"
-            if echo "$open_titles" | grep -qFx "$title"; then
-              echo "Skipping ${dir} -- open issue exists"
-              printf '%s\tskipped:open-issue\n' "$dir" >> "$REPORT_DIR/chunk-status.tsv"
-              echo "::endgroup::"
-              continue
-            fi
             cd source
             if [[ "$dir" == "(root-files)" ]]; then
               coderabbit review --base-commit "${{ steps.range.outputs.base_sha }}" --agent > /tmp/review-output.jsonl 2>/tmp/review-stderr.log
