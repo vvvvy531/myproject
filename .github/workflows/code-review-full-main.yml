@@ -294,6 +294,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          echo "DEBUG: end_index=${{ steps.range.outputs.end_index }} start_index=${{ steps.range.outputs.start_index }} total=${{ steps.range.outputs.total_chunks }}"
+          echo "DEBUG: chunk-status.tsv contents:"
+          cat "$REPORT_DIR/chunk-status.tsv" 2>/dev/null || echo "(file not found)"
           next="$(python3 - <<'PY'
           import pathlib
           all_chunks=pathlib.Path('full-review-report/all-chunks.txt').read_text(encoding='utf-8', errors='replace').splitlines()
@@ -311,6 +314,7 @@ jobs:
             print(int('${{ steps.range.outputs.end_index }}'))
           PY
           )"
+          echo "DEBUG: next=${next}"
           total='${{ steps.range.outputs.total_chunks }}'
           completed=false
           if (( next >= total )); then completed=true; fi
