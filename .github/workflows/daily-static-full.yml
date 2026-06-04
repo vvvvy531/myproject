@@ -1,0 +1,233 @@
+name: Daily Static Full Review
+
+on:
+  schedule:
+    - cron: '0 18 * * *'
+    - cron: '0 22 * * *'
+    - cron: '0 2 * * *'
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: daily-static-full
+  cancel-in-progress: false
+
+env:
+  SOURCE_REPO: vvvvy531/myproject-source
+  MEGALINTER_IMAGE: ghcr.io/oxsecurity/megalinter:v9.5.0
+  STATE_TITLE: Daily Static Full Scan State
+  REPORT_TITLE: "Daily Static Review: Latest"
+  REPORT_DIR: daily-static-report
+
+jobs:
+  daily-static-full:
+    name: Daily static full codebase review
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - name: Check unresolved report and daily state
+        id: state
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
+          PUBLIC_TOKEN: ${{ github.token }}
+        run: |
+          set +x
+          set -euo pipefail
+          today="$(TZ=Asia/Shanghai date +%F)"
+          echo "today=$today" >> "$GITHUB_OUTPUT"
+
+          report_state="none"
+          report_number=""
+          report_json="$(TITLE="$REPORT_TITLE" gh issue list -R "$SOURCE_REPO" --state all --limit 100 --json number,title,state --jq '[.[] | select(.title == env.TITLE)] | first // {}' || echo '{}')"
+          report_state="$(printf '%s' "$report_json" | jq -r '.state // "none"')"
+          report_number="$(printf '%s' "$report_json" | jq -r '.number // ""')"
+          if [[ "$report_state" == "OPEN" ]]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "Skip: private report issue #$report_number is still open"
+            exit 0
+          fi
+
+          state_issue="$(GH_TOKEN="$PUBLIC_TOKEN" gh issue list -R "$GITHUB_REPOSITORY" --state all --search "$STATE_TITLE in:title" --json number,title --jq '.[] | select(.title == env.STATE_TITLE) | .number' | head -n 1 || true)"
+          last=""
+          if [[ -n "$state_issue" ]]; then
+            GH_TOKEN="$PUBLIC_TOKEN" gh issue view "$state_issue" -R "$GITHUB_REPOSITORY" --json body --jq .body > /tmp/daily-static-state.md || true
+            last="$(python3 - <<'PY'
+          import json,re,pathlib
+          p=pathlib.Path('/tmp/daily-static-state.md')
+          s=p.read_text(errors='ignore') if p.exists() else ''
+          m=re.search(r'```json\s*(\{.*?\})\s*```', s, re.S)
+          print(json.loads(m.group(1)).get('last_success_date','') if m else '')
+          PY
+            )"
+          fi
+          if [[ "$last" == "$today" && "$report_state" != "CLOSED" ]]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "Already completed today: $today"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout private source main
+        if: steps.state.outputs.skip != 'true'
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          repository: ${{ env.SOURCE_REPO }}
+          token: ${{ secrets.PRIVATE_SOURCE_PAT }}
+          ref: main
+          fetch-depth: 0
+          lfs: false
+          submodules: recursive
+          path: source
+          persist-credentials: false
+
+      - name: Run MegaLinter full scan without public summary
+        if: steps.state.outputs.skip != 'true'
+        id: megalinter
+        shell: bash
+        timeout-minutes: 125
+        run: |
+          set +x
+          set +e
+          mkdir -p "$REPORT_DIR/megalinter-reports"
+          timeout 110m docker run --rm \
+            -v "$PWD/source:/tmp/lint" \
+            -v "$PWD/$REPORT_DIR/megalinter-reports:/tmp/lint/megalinter-reports" \
+            -e DEFAULT_WORKSPACE=/tmp/lint \
+            -e VALIDATE_ALL_CODEBASE=true \
+            -e ENABLE=CPP,C,YAML,JSON,BASH,MARKDOWN \
+            -e DISABLE_LINTERS=BASH_EXEC \
+            -e DISABLE_ERRORS=true \
+            -e APPLY_FIXES=none \
+            -e PRINT_ALPACA=false \
+            -e PARALLEL_PROCESS_NUMBER=2 \
+            -e SARIF_REPORTER=false \
+            -e GITHUB_STATUS_REPORTER=false \
+            -e GITHUB_COMMENT_REPORTER=false \
+            -e GITHUB_STEP_SUMMARY_REPORTER=false \
+            -e CONSOLE_REPORTER=false \
+            -e FILEIO_REPORTER=true \
+            -e SECURITY_SUGGESTIONS=false \
+            -e FLAVOR_SUGGESTIONS=false \
+            -e FILTER_REGEX_EXCLUDE='(Binaries/|Intermediate/|Saved/|DerivedDataCache/|Content/|graphify-out/|\.git/|\.vs/|\.idea/)' \
+            "$MEGALINTER_IMAGE" \
+            > "$REPORT_DIR/megalinter-stdout.log" \
+            2> "$REPORT_DIR/megalinter-stderr.log"
+          code=$?
+          echo "$code" > "$REPORT_DIR/megalinter-exit-code.txt"
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Upsert private review report
+        if: steps.state.outputs.skip != 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
+          TODAY: ${{ steps.state.outputs.today }}
+          MEGALINTER_EXIT_CODE: ${{ steps.megalinter.outputs.exit_code }}
+        run: |
+          set +x
+          set -euo pipefail
+          head_sha="$(git -C source rev-parse HEAD)"
+          body_file="$REPORT_DIR/private-report.md"
+          {
+            echo "# Daily Static Review"
+            echo
+            echo "- Date: $TODAY"
+            echo "- MegaLinter exit code: ${MEGALINTER_EXIT_CODE:-unknown}"
+            echo "- Source repo: $SOURCE_REPO"
+            echo "- Public run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            echo "- Head SHA: $head_sha"
+            echo "- Tool: $MEGALINTER_IMAGE"
+            echo "- Mode: full codebase static pass"
+            echo "- Enabled families: CPP, C, YAML, JSON, BASH, MARKDOWN"
+            echo "- Disabled linters: BASH_EXEC"
+            echo
+            echo "## Notes"
+            echo
+            echo "This issue is the unresolved-work gate: leave it open to skip future scans; close it after resolving/reviewing findings so the next scheduled run overwrites and reopens it."
+            echo
+            echo "## MegaLinter report"
+            echo
+          } > "$body_file"
+
+          report_root="$REPORT_DIR/megalinter-reports"
+          if [[ -d "$report_root" ]]; then
+            mapfile -t report_files < <(find "$report_root" -maxdepth 4 -type f \( -name '*.md' -o -name '*.txt' -o -name '*.log' \) | sort | head -n 30)
+            if (( ${#report_files[@]} == 0 )); then
+              echo "No text report files found under \`$report_root\`." >> "$body_file"
+            else
+              for f in "${report_files[@]}"; do
+                echo "### \`$f\`" >> "$body_file"
+                echo '```text' >> "$body_file"
+                sed -n '1,180p' "$f" | sed -e 's/```/` ` `/g' >> "$body_file"
+                echo '```' >> "$body_file"
+                echo >> "$body_file"
+              done
+            fi
+          fi
+          echo "### MegaLinter stderr tail" >> "$body_file"
+          echo '```text' >> "$body_file"
+          tail -n 120 "$REPORT_DIR/megalinter-stderr.log" | sed -e 's/```/` ` `/g' >> "$body_file" || true
+          echo '```' >> "$body_file"
+          echo >> "$body_file"
+          echo "### MegaLinter stdout tail" >> "$body_file"
+          echo '```text' >> "$body_file"
+          tail -n 120 "$REPORT_DIR/megalinter-stdout.log" | sed -e 's/```/` ` `/g' >> "$body_file" || true
+          echo '```' >> "$body_file"
+
+          if [[ $(wc -c < "$body_file") -gt 60000 ]]; then
+            head -c 58000 "$body_file" > "$body_file.tmp"
+            printf '\n\n_Report truncated to fit GitHub issue body._\n' >> "$body_file.tmp"
+            mv "$body_file.tmp" "$body_file"
+          fi
+
+          issue="$(TITLE="$REPORT_TITLE" gh issue list -R "$SOURCE_REPO" --state all --search "$REPORT_TITLE in:title" --json number,title --jq '.[] | select(.title == env.TITLE) | .number' | head -n 1 || true)"
+          if [[ -z "$issue" ]]; then
+            gh issue create -R "$SOURCE_REPO" --title "$REPORT_TITLE" --body-file "$body_file" >/dev/null
+          else
+            gh issue edit "$issue" -R "$SOURCE_REPO" --body-file "$body_file"
+            gh issue reopen "$issue" -R "$SOURCE_REPO" || true
+          fi
+          echo "$head_sha" > "$REPORT_DIR/head-sha.txt"
+
+      - name: Update public daily state
+        if: steps.state.outputs.skip != 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TODAY: ${{ steps.state.outputs.today }}
+        run: |
+          set +x
+          set -euo pipefail
+          body_file="$REPORT_DIR/state.md"
+          {
+            echo "# Daily Static Full Scan State"
+            echo
+            echo "Do not edit unless resetting daily static full scan progress."
+            echo
+            echo '```json'
+            echo "{\"last_success_date\":\"$TODAY\",\"last_result\":\"success\",\"run_id\":\"$GITHUB_RUN_ID\",\"updated_at\":\"$(date -u +%FT%TZ)\"}"
+            echo '```'
+          } > "$body_file"
+          issue="$(gh issue list -R "$GITHUB_REPOSITORY" --state all --search "$STATE_TITLE in:title" --json number,title --jq '.[] | select(.title == env.STATE_TITLE) | .number' | head -n 1 || true)"
+          if [[ -z "$issue" ]]; then
+            gh issue create -R "$GITHUB_REPOSITORY" --title "$STATE_TITLE" --body-file "$body_file" >/dev/null
+          else
+            gh issue edit "$issue" -R "$GITHUB_REPOSITORY" --body-file "$body_file"
+            gh issue reopen "$issue" -R "$GITHUB_REPOSITORY" || true
+          fi
+
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: |
+          set +x
+          sudo rm -rf source "$REPORT_DIR" || rm -rf source "$REPORT_DIR" || true
+          rm -f ~/.git-credentials
+          git config --global --unset-all credential.helper || true
+

@@ -1,0 +1,953 @@
+name: Private Source Linux Build
+
+"on":
+
+  workflow_dispatch:
+
+    inputs:
+
+      static_analysis:
+
+        description: Run weekly static analysis job instead of Linux build
+
+        required: false
+
+        default: "false"
+
+        type: choice
+
+        options: ["false", "true"]
+
+      source_ref:
+
+        description: Private source ref to build
+
+        required: false
+
+        default: main
+
+      source_sha:
+
+        description: Optional private source SHA to verify
+
+        required: false
+
+        default: ""
+
+  repository_dispatch:
+
+    types: [linux-build]
+
+concurrency:
+
+  group: linux-build-${{ github.event.client_payload.source_ref || 'main' }}
+  cancel-in-progress: false
+
+permissions:
+
+  contents: read
+
+  packages: read
+
+  actions: read
+
+  pull-requests: read
+  security-events: read
+
+env:
+
+  SOURCE_REPO: vvvvy531/myproject-source
+
+  ARTIFACT_REPO: vvvvy531/myproject-linux-builds
+
+  PROJECT_FILE: MyProject.uproject
+
+  TARGET_NAME: MyProject
+
+  UE_IMAGE: ghcr.io/epicgames/unreal-engine:dev-slim-5.7.4
+
+  SOURCE_REF: ${{ github.event.client_payload.source_ref || inputs.source_ref || 'main' }}
+
+  SOURCE_SHA: ${{ github.event.client_payload.source_sha || inputs.source_sha || '' }}
+
+jobs:
+
+  build-linux:
+
+    name: UE 5.7.4 Linux smoke build
+
+    runs-on: ubuntu-latest
+
+    timeout-minutes: 120
+
+    steps:
+
+      - name: Runtime skip when Linux build already running
+        id: runtime_guard
+        shell: bash
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WORKFLOW: Private Source Linux Build
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          echo "should_run=true" >> "$GITHUB_OUTPUT"
+          active="$(gh run list --repo "$REPO" --workflow "$WORKFLOW" --limit 20 --json databaseId,status,url,createdAt             --jq '.[] | select((.status == "in_progress" or .status == "queued" or .status == "pending") and (.databaseId != ${{ github.run_id }})) | "\(.databaseId)	\(.status)	\(.url)	\(.createdAt)"' | head -n 1 || true)"
+          if [[ -n "$active" ]]; then
+            echo "Existing Linux build active: $active"
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "active_build<<EOF"
+              echo "$active"
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Free hosted runner disk
+
+        if: steps.runtime_guard.outputs.should_run == 'true'
+
+        shell: bash
+
+        run: |
+
+          set -euo pipefail
+
+          df -h
+
+          sudo timeout 180s rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
+
+          sudo timeout 120s docker system prune -af || true
+
+          df -h
+
+      - name: Login to GHCR
+
+        if: steps.runtime_guard.outputs.should_run == 'true'
+
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
+
+        with:
+
+          registry: ghcr.io
+
+          username: ${{ secrets.GHCR_USERNAME }}
+
+          password: ${{ secrets.GHCR_TOKEN }}
+
+      - name: Start UE image pull in background
+
+        if: steps.runtime_guard.outputs.should_run == 'true'
+
+        shell: bash
+
+        run: |
+
+          set -euo pipefail
+
+          nohup bash -lc 'docker pull "$UE_IMAGE" > /tmp/ue-image-pull.log 2>&1' & echo $! > /tmp/ue-image-pull.pid
+
+      - name: Checkout private source
+
+        if: steps.runtime_guard.outputs.should_run == 'true'
+
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+
+        with:
+
+          repository: ${{ env.SOURCE_REPO }}
+
+          token: ${{ secrets.SOURCE_REPO_TOKEN }}
+
+          ref: ${{ env.SOURCE_REF }}
+
+          path: source
+
+          lfs: false
+
+          submodules: recursive
+
+      - name: Record checked out source revision
+
+        if: steps.runtime_guard.outputs.should_run == 'true'
+
+        shell: bash
+
+        run: |
+
+          set -euo pipefail
+
+          echo "Requested source ref: ${SOURCE_REF}"
+
+          echo "Requested source sha: ${SOURCE_SHA:-<none>}"
+
+          git -C source rev-parse HEAD
+
+          if [[ -n "${SOURCE_SHA:-}" && "$(git -C source rev-parse HEAD)" != "${SOURCE_SHA}" ]]; then
+
+            echo "Warning: checked out source HEAD does not match requested source sha" >&2
+
+          fi
+
+      - name: Prepare output directory
+
+        if: steps.runtime_guard.outputs.should_run == 'true'
+
+        shell: bash
+
+        run: mkdir -p dist .sccache-cache .build-cache-restore .build-cache-restore
+
+      - name: Normalize private source file mtimes for UBT incremental cache
+
+        if: steps.runtime_guard.outputs.should_run == 'true'
+
+        shell: bash
+
+        working-directory: source
+
+        run: |
+
+          set -euo pipefail
+
+          echo "Normalize tracked source mtimes to each file's last git commit time"
+
+          git ls-files -z | while IFS= read -r -d '' file; do
+
+            ts="$(git log -1 --format=%ct -- "$file" 2>/dev/null || true)"
+
+            if [[ -n "$ts" ]]; then
+
+              touch -d "@$ts" "$file" || true
+
+            fi
+
+          done
+
+          stat MyProject.uproject Source/MyProject.Target.cs Source/MyProject/MyProject.Build.cs || true
+
+      # Public actions/cache intentionally avoids private source build products.
+
+      # Compiler/object caches live only in private release assets requiring ARTIFACT_REPO_TOKEN.
+
+      - name: Restore sccache compiler cache from private builds repo
+
+        if: steps.runtime_guard.outputs.should_run == 'true' && vars.ENABLE_SCCACHE == 'true'
+
+        shell: bash
+
+        env:
+
+          GH_TOKEN: ${{ secrets.ARTIFACT_REPO_TOKEN }}
+
+        run: |
+
+          set -euo pipefail
+
+          cache_tag="sccache-${{ runner.os }}"
+
+          mkdir -p .sccache-cache .cache-restore
+
+          if gh release download "$cache_tag" -R "$ARTIFACT_REPO" -p sccache-cache.tar.zst -D .cache-restore --clobber; then
+
+            cat > /tmp/_validate_tar.py <<'PY'
+            import sys, tarfile
+            allowed = set()
+            safe_types = {tarfile.REGTYPE, tarfile.DIRTYPE}
+            with tarfile.open(fileobj=sys.stdin.buffer, mode="r|") as tf:
+                for member in tf:
+                    if member.type not in safe_types:
+                        print(f"Rejected non-regular entry: {member.name!r} (type={member.type})", file=sys.stderr)
+                        sys.exit(1)
+                    name = member.name.rstrip("/")
+                    if not name or name.startswith("/") or ".." in name.split("/"):
+                        print(f"Rejected unsafe entry: {member.name!r}", file=sys.stderr)
+                        sys.exit(1)
+                    allowed.add(name)
+            print("sccache archive path validation passed")
+            PY
+            zstd -dc .cache-restore/sccache-cache.tar.zst | python3 /tmp/_validate_tar.py
+            rm -f /tmp/_validate_tar.py
+
+            sudo tar --zstd --no-same-owner --no-same-permissions -xf .cache-restore/sccache-cache.tar.zst -C .sccache-cache
+
+            sudo chown -R "$USER:$USER" .sccache-cache
+
+            du -sh .sccache-cache || true
+
+          else
+
+            echo "No private sccache cache release yet: $cache_tag"
+
+          fi
+
+      - name: Restore UE build products cache from private builds repo
+
+        if: steps.runtime_guard.outputs.should_run == 'true' && vars.ENABLE_UE_BUILD_PRODUCTS_CACHE == 'true' && (github.event_name != 'workflow_dispatch' || inputs.static_analysis != 'true')
+
+        shell: bash
+
+        continue-on-error: true
+
+        env:
+
+          GH_TOKEN: ${{ secrets.ARTIFACT_REPO_TOKEN }}
+
+        run: |
+
+          set -euo pipefail
+
+          cache_tag="linux-build-cache-${{ runner.os }}"
+
+          mkdir -p .build-cache-restore
+
+          if gh release download "$cache_tag" -R "$ARTIFACT_REPO" -p ue-build-products.tar.zst -D .build-cache-restore --clobber; then
+
+            echo "== restored UE cache archive =="
+
+            ls -lh .build-cache-restore/ue-build-products.tar.zst || true
+
+            zstd -dc .build-cache-restore/ue-build-products.tar.zst > .build-cache-restore/ue-build-products.tar
+            python3 - <<'PY'
+            import sys, tarfile
+            archive = ".build-cache-restore/ue-build-products.tar"
+            allowed_prefixes = ("Binaries/", "Intermediate/", "Saved/")
+            safe_types = {tarfile.REGTYPE, tarfile.DIRTYPE}
+            with tarfile.open(archive, "r:") as tf:
+                for member in tf.getmembers():
+                    if member.type not in safe_types:
+                        print(f"Rejected non-regular entry: {member.name!r} (type={member.type})", file=sys.stderr)
+                        sys.exit(1)
+                    name = member.name.rstrip("/")
+                    if not name or name.startswith("/") or ".." in name.split("/"):
+                        print(f"Rejected unsafe entry: {member.name!r}", file=sys.stderr)
+                        sys.exit(1)
+                    plugin_cache_path = name.startswith("Plugins/") and ("/Binaries/" in name or "/Intermediate/" in name)
+                    if not (any(name.startswith(p) for p in allowed_prefixes) or plugin_cache_path):
+                        print(f"Rejected entry outside allowlist: {member.name!r}", file=sys.stderr)
+                        sys.exit(1)
+            print("UE build-products archive path validation passed")
+            PY
+            rm -f .build-cache-restore/ue-build-products.tar
+
+            tar --zstd --no-same-owner --no-same-permissions -xf .build-cache-restore/ue-build-products.tar.zst -C source
+
+            echo "== restored UE cache sizes =="
+
+            du -sh source/Binaries source/Intermediate source/Saved/UnrealBuildTool source/Plugins/*/Binaries source/Plugins/*/Intermediate 2>/dev/null || true
+
+            echo "== restored UE object files =="
+
+            find source -name '*.o' -type f | tee dist/restored-object-files.txt | wc -l || true
+
+            find source -name '*.gch' -o -name '*.d' | tee dist/restored-pch-dep-files.txt | wc -l || true
+
+            ls -l source/Plugins/Flow/Intermediate/Build/Linux/x64/UnrealGame/Development/Flow/FlowPinType.cpp.o source/Plugins/YarnSpinner-Unreal-main/Intermediate/Build/Linux/x64/UnrealGame/Development/YarnSpinner/Module.YarnSpinner.7.cpp.o 2>/dev/null || true
+
+            echo "== restored UE cache oldest/newest before mtime fix =="
+
+            stat source/MyProject.uproject || true
+
+            find source/Intermediate source/Binaries source/Saved/UnrealBuildTool source/Plugins -type f 2>/dev/null | head -2000 | xargs -r stat -c '%Y %n' 2>/dev/null | sort -n | { head -10; tail -10; } || true
+
+            echo "== restored UE cache newest after extract =="
+
+            find source/Intermediate source/Binaries source/Saved/UnrealBuildTool source/Plugins -type f 2>/dev/null | head -2000 | xargs -r stat -c '%Y %n' 2>/dev/null | sort -n | tail -20 || true
+
+          else
+
+            echo "No private UE build-products cache release yet: $cache_tag"
+
+          fi
+
+      - name: Initialize CodeQL for advanced review
+
+        if: steps.runtime_guard.outputs.should_run == 'true' && github.event_name == 'workflow_dispatch' && inputs.static_analysis == 'true'
+
+        uses: github/codeql-action/init@7211b7c8077ea37d8641b6271f6a365a22a5fbfa
+
+        with:
+
+          languages: cpp
+
+          source-root: source
+
+          build-mode: manual
+
+          queries: security-and-quality
+
+          dependency-caching: false
+
+      - name: Build Linux target in official UE container
+
+        if: steps.runtime_guard.outputs.should_run == 'true'
+
+        id: build
+
+        shell: bash
+
+        continue-on-error: true
+
+        run: |
+
+          set -euo pipefail
+
+          if [[ -f /tmp/ue-image-pull.pid ]]; then
+
+            pull_pid="$(cat /tmp/ue-image-pull.pid)"
+
+            while kill -0 "$pull_pid" 2>/dev/null; do sleep 5; done
+
+            cat /tmp/ue-image-pull.log || true
+
+            docker image inspect "$UE_IMAGE" >/dev/null 2>&1 || docker pull "$UE_IMAGE"
+
+          else
+
+            docker pull "$UE_IMAGE"
+
+          fi
+
+          docker image ls "$UE_IMAGE"
+
+          df -h
+
+          env | grep -E '^(CODEQL_|SEMMLE_|LD_PRELOAD=)' > /tmp/codeql-docker.env || true
+
+          HOST_SOURCE="$PWD/source"
+          HOST_DIST="$PWD/dist"
+
+          docker run --rm --user root \
+            --env-file /tmp/codeql-docker.env \
+            -v /opt/hostedtoolcache/CodeQL:/opt/hostedtoolcache/CodeQL:ro \
+            -v /home/runner/work/_temp:/home/runner/work/_temp \
+            -e PROJECT_FILE="$PROJECT_FILE" \
+            -e TARGET_NAME="$TARGET_NAME" \
+            -e GITHUB_RUN_NUMBER="$GITHUB_RUN_NUMBER" \
+            -e ENABLE_SCCACHE="${{ vars.ENABLE_SCCACHE }}" \
+            -v "$HOST_SOURCE:$HOST_SOURCE" \
+            -v "$HOST_DIST:$HOST_DIST" \
+            -v "$PWD/.sccache-cache:/workspace/.sccache-cache" \
+            -w "$HOST_SOURCE" \
+            "$UE_IMAGE" \
+            bash -lc '
+
+              set -o pipefail
+
+              mkdir -p ../dist
+
+              if ! command -v zstd >/dev/null 2>&1; then apt-get update && apt-get install -y zstd; fi
+
+              if [[ ! -x /opt/sccache/sccache ]]; then
+
+                curl -L https://github.com/mozilla/sccache/releases/download/v0.15.0/sccache-v0.15.0-x86_64-unknown-linux-musl.tar.gz -o /tmp/sccache.tar.gz
+
+                tar -xzf /tmp/sccache.tar.gz -C /tmp
+
+                mkdir -p /opt/sccache
+
+                install /tmp/sccache-v0.15.0-x86_64-unknown-linux-musl/sccache /opt/sccache/sccache
+
+              fi
+
+              if [[ ! -x /home/ue4/UnrealEngine/Engine/Source/ThirdParty/Intel/ISPC/bin/Linux/ispc ]]; then
+
+                ispc_version="v1.30.0"
+
+                curl -fsSL "https://github.com/ispc/ispc/releases/download/${ispc_version}/ispc-${ispc_version}-linux.tar.gz" -o /tmp/ispc.tar.gz
+
+                tar -xzf /tmp/ispc.tar.gz -C /tmp
+
+                mkdir -p /home/ue4/UnrealEngine/Engine/Source/ThirdParty/Intel/ISPC/bin/Linux
+
+                install -m 755 "/tmp/ispc-${ispc_version}-linux/bin/ispc" /home/ue4/UnrealEngine/Engine/Source/ThirdParty/Intel/ISPC/bin/Linux/ispc
+
+              fi
+
+              # UBT tracks tool mtimes; normalize generated/installed tools so fresh containers do not invalidate makefiles.
+
+              touch -d "2000-01-01 00:00:00 UTC" /home/ue4/UnrealEngine/Engine/Source/ThirdParty/Intel/ISPC/bin/Linux/ispc || true
+
+              if ! command -v flatc >/dev/null 2>&1; then apt-get update && apt-get install -y flatbuffers-compiler; fi
+
+              mkdir -p Plugins/FlatBuffers/Tools/flatc Plugins/FlatBuffers/Tools/include
+
+              install -m 755 "$(command -v flatc)" Plugins/FlatBuffers/Tools/flatc/flatc || true
+
+              install -m 755 "$(command -v flatc)" Plugins/FlatBuffers/Tools/flatc/flatc.exe || true
+
+              touch -d "2000-01-01 00:00:00 UTC" Plugins/FlatBuffers/Tools/flatc/flatc Plugins/FlatBuffers/Tools/flatc/flatc.exe || true
+
+              mkdir -p "/home/ue4/.config/Unreal Engine/UnrealBuildTool" "/home/ue4/.config/Epic/UnrealBuildTool"
+
+              printf "%s\n" \
+                "<?xml version=\"1.0\" encoding=\"utf-8\"?>" \
+                "<Configuration xmlns=\"https://www.unrealengine.com/BuildConfiguration\">" \
+                "  <BuildConfiguration>" \
+                "    <bUseUnityBuild>true</bUseUnityBuild>" \
+                "    <bUseAdaptiveUnityBuild>true</bUseAdaptiveUnityBuild>" \
+                "    <bAdaptiveUnityDisablesOptimizations>true</bAdaptiveUnityDisablesOptimizations>" \
+                "    <bAdaptiveUnityDisablesPCH>true</bAdaptiveUnityDisablesPCH>" \
+                "  </BuildConfiguration>" \
+                "</Configuration>" > /tmp/BuildConfiguration.xml
+
+              cp /tmp/BuildConfiguration.xml "/home/ue4/.config/Unreal Engine/UnrealBuildTool/BuildConfiguration.xml"
+
+              cp /tmp/BuildConfiguration.xml "/home/ue4/.config/Epic/UnrealBuildTool/BuildConfiguration.xml"
+
+              # Fresh CI containers recreate BuildConfiguration.xml every run; UBT treats that as makefile-invalidating.
+
+              # Keep config content deterministic but timestamp old so restored Intermediate can remain incremental.
+
+              touch -d "2000-01-01 00:00:00 UTC" "/home/ue4/.config/Unreal Engine/UnrealBuildTool/BuildConfiguration.xml" "/home/ue4/.config/Epic/UnrealBuildTool/BuildConfiguration.xml" || true
+
+              if [[ "${ENABLE_SCCACHE:-false}" == "true" ]]; then
+
+                export SCCACHE_DIR=/workspace/.sccache-cache SCCACHE_CACHE_SIZE=8G SCCACHE_BASEDIRS="$PWD" SCCACHE_IGNORE_SERVER_IO_ERROR=1
+
+              printf "%s" "IyEvdXNyL2Jpbi9lbnYgcHl0aG9uMwppbXBvcnQgb3MsIHNobGV4LCBzeXMKCmRlZiBleHBhbmRfYXJncyhhcmdzLCBzZWVuPU5vbmUpOgogICAgaWYgc2VlbiBpcyBOb25lOgogICAgICAgIHNlZW4gPSBzZXQoKQogICAgb3V0ID0gW10KICAgIGZvciBhcmcgaW4gYXJnczoKICAgICAgICBpZiBhcmcuc3RhcnRzd2l0aCgnQCcpIGFuZCBsZW4oYXJnKSA+IDE6CiAgICAgICAgICAgIHJzcCA9IGFyZ1sxOl0uc3RyaXAoJyInKS5zdHJpcCgiJyIpCiAgICAgICAgICAgIHJzcF9hYnMgPSBvcy5wYXRoLmFic3BhdGgocnNwKQogICAgICAgICAgICBpZiByc3BfYWJzIG5vdCBpbiBzZWVuOgogICAgICAgICAgICAgICAgdHJ5OgogICAgICAgICAgICAgICAgICAgIHNlZW4uYWRkKHJzcF9hYnMpCiAgICAgICAgICAgICAgICAgICAgd2l0aCBvcGVuKHJzcCwgJ3InLCBlbmNvZGluZz0ndXRmLTgnKSBhcyBmaDoKICAgICAgICAgICAgICAgICAgICAgICAgb3V0LmV4dGVuZChleHBhbmRfYXJncyhzaGxleC5zcGxpdChmaC5yZWFkKCksIHBvc2l4PVRydWUpLCBzZWVuKSkKICAgICAgICAgICAgICAgICAgICBjb250aW51ZQogICAgICAgICAgICAgICAgZXhjZXB0IEV4Y2VwdGlvbjoKICAgICAgICAgICAgICAgICAgICBwYXNzCiAgICAgICAgb3V0LmFwcGVuZChhcmcpCiAgICByZXR1cm4gb3V0Cgpvcy5leGVjdignL29wdC9zY2NhY2hlL3NjY2FjaGUnLCBbJ3NjY2FjaGUnXSArIGV4cGFuZF9hcmdzKHN5cy5hcmd2WzE6XSkp" | base64 -d > /usr/local/bin/sccache-rsp-wrapper
+
+              chmod +x /usr/local/bin/sccache-rsp-wrapper
+
+              unset UE_SCCACHE_EXECUTABLE CCACHE_EXEC
+
+              clangxx_path="$(find /home/ue4/UnrealEngine/Engine/Extras/ThirdPartyNotUE/SDKs/HostLinux -path "*/x86_64-unknown-linux-gnu/bin/clang++" | head -n 1 || true)"
+
+              echo "sccache clang++ candidate: ${clangxx_path:-<none>}"
+
+              if [[ -n "$clangxx_path" ]]; then
+
+                toolchain_bin="$(dirname "$clangxx_path")"
+
+                for compiler in clang clang++; do
+
+                  if [[ -e "$toolchain_bin/$compiler" && ! -e "$toolchain_bin/$compiler.real" ]]; then
+
+                    mv "$toolchain_bin/$compiler" "$toolchain_bin/$compiler.real"
+
+                    printf "%s" "IyEvdXNyL2Jpbi9lbnYgcHl0aG9uMwppbXBvcnQgb3MsIHNobGV4LCBzeXMKcmVhbCA9IHN5cy5hcmd2WzBdICsgJy5yZWFsJwoKZGVmIGV4cGFuZF9hcmdzKGFyZ3MsIHNlZW49Tm9uZSk6CiAgICBpZiBzZWVuIGlzIE5vbmU6CiAgICAgICAgc2VlbiA9IHNldCgpCiAgICBvdXQgPSBbXQogICAgZm9yIGFyZyBpbiBhcmdzOgogICAgICAgIGlmIGFyZy5zdGFydHN3aXRoKCdAJykgYW5kIGxlbihhcmcpID4gMToKICAgICAgICAgICAgcnNwID0gYXJnWzE6XS5zdHJpcCgnIicpLnN0cmlwKCInIikKICAgICAgICAgICAgcnNwX2FicyA9IG9zLnBhdGguYWJzcGF0aChyc3ApCiAgICAgICAgICAgIGlmIHJzcF9hYnMgbm90IGluIHNlZW46CiAgICAgICAgICAgICAgICB0cnk6CiAgICAgICAgICAgICAgICAgICAgc2Vlbi5hZGQocnNwX2FicykKICAgICAgICAgICAgICAgICAgICB3aXRoIG9wZW4ocnNwLCAncicsIGVuY29kaW5nPSd1dGYtOCcpIGFzIGZoOgogICAgICAgICAgICAgICAgICAgICAgICBvdXQuZXh0ZW5kKGV4cGFuZF9hcmdzKHNobGV4LnNwbGl0KGZoLnJlYWQoKSwgcG9zaXg9VHJ1ZSksIHNlZW4pKQogICAgICAgICAgICAgICAgICAgIGNvbnRpbnVlCiAgICAgICAgICAgICAgICBleGNlcHQgRXhjZXB0aW9uOgogICAgICAgICAgICAgICAgICAgIHBhc3MKICAgICAgICBvdXQuYXBwZW5kKGFyZykKICAgIHJldHVybiBvdXQKCmV4cGFuZGVkID0gZXhwYW5kX2FyZ3Moc3lzLmFyZ3ZbMTpdKQppZiBhbnkoYS5zdGFydHN3aXRoKCdAJykgZm9yIGEgaW4gZXhwYW5kZWQpOgogICAgcHJpbnQoJ3NjY2FjaGUgd3JhcHBlciB3YXJuaW5nOiB1bmV4cGFuZGVkIHJlc3BvbnNlIGFyZyByZW1haW5zJywgZmlsZT1zeXMuc3RkZXJyKQpvcy5leGVjdignL29wdC9zY2NhY2hlL3NjY2FjaGUnLCBbJ3NjY2FjaGUnLCByZWFsXSArIGV4cGFuZGVkKQ==" | base64 -d > "$toolchain_bin/$compiler"
+
+                    chmod +x "$toolchain_bin/$compiler"
+
+                    touch -d "2000-01-01 00:00:00 UTC" "$toolchain_bin/$compiler" || true
+
+                    echo "wrapped $toolchain_bin/$compiler -> /opt/sccache/sccache with recursive rsp expansion"
+
+                  fi
+
+                done
+
+              fi
+
+              /opt/sccache/sccache --stop-server || true
+
+              /opt/sccache/sccache --start-server || true
+
+              else
+
+                echo "sccache disabled for validation build"
+
+              fi
+
+              set +e
+
+              build_cmd=(/home/ue4/UnrealEngine/Engine/Build/BatchFiles/Linux/Build.sh "$TARGET_NAME" Linux Development "$PWD/$PROJECT_FILE" -WaitMutex -NoHotReload -NoUBA -MaxParallelActions=4 -VeryVerbose)
+              "${build_cmd[@]}" 2>&1 | tee ../dist/build.log
+
+              code=${PIPESTATUS[0]}
+
+              set -e
+
+              if grep -q "Result: Failed" ../dist/build.log; then code=1; fi
+
+              /opt/sccache/sccache --show-stats > ../dist/sccache-stats.txt 2>&1 || true
+
+              du -sh "$SCCACHE_DIR" >> ../dist/sccache-stats.txt 2>&1 || true
+
+              cp /home/ue4/.config/Epic/UnrealBuildTool/Log.txt ../dist/ubt.log 2>/dev/null || true
+
+              find Intermediate -type f \( -name "*.log" -o -name "*.txt" -o -name "*.err" -o -name "*.response" -o -name "*.rsp" \) -print > ../dist/intermediate-diagnostics-files.txt 2>/dev/null || true
+
+              tar -czf ../dist/intermediate-diagnostics.tar.gz -T ../dist/intermediate-diagnostics-files.txt 2>/dev/null || true
+
+              : > ../dist/package-files.txt
+
+              for path in Binaries Saved Intermediate/Build Plugins; do
+
+                [[ -e "$path" ]] || continue
+
+                if [[ "$path" == "Plugins" ]]; then
+
+                  find Plugins -type f \( -path '*/Binaries/*' -o -path '*/Intermediate/*' \) -print >> ../dist/package-files.txt
+
+                else
+
+                  find "$path" -type f -print >> ../dist/package-files.txt
+
+                fi
+
+              done
+
+              if [[ -s ../dist/package-files.txt ]]; then
+
+                tar -czf "../dist/MyProject-Linux-${GITHUB_RUN_NUMBER:-0}.tar.gz" -T ../dist/package-files.txt
+
+              fi
+
+              [[ -n "${code:-}" ]] || code=0
+
+              printf "%s\n" "$code" > ../dist/build-exit-code.txt
+
+              exit 0
+
+            '
+
+          code="$(cat dist/build-exit-code.txt 2>/dev/null || true)"
+
+          if [[ -z "$code" ]]; then
+
+            if grep -q "Result: Failed" dist/build.log 2>/dev/null; then code=1; else code=0; fi
+
+            printf "%s\n" "$code" > dist/build-exit-code.txt
+
+          fi
+
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+
+      - name: Run CodeQL advanced analysis
+
+        if: steps.runtime_guard.outputs.should_run == 'true' && github.event_name == 'workflow_dispatch' && inputs.static_analysis == 'true'
+
+        uses: github/codeql-action/analyze@7211b7c8077ea37d8641b6271f6a365a22a5fbfa
+
+        with:
+
+          upload: false
+
+          output: dist/codeql-sarif
+
+          category: private-source-advanced
+
+      - name: Save sccache compiler cache to private builds repo
+
+        if: steps.runtime_guard.outputs.should_run == 'true' && vars.ENABLE_SCCACHE == 'true' && always()
+
+        continue-on-error: true
+
+        shell: bash
+
+        env:
+
+          GH_TOKEN: ${{ secrets.ARTIFACT_REPO_TOKEN }}
+
+        run: |
+
+          set -euo pipefail
+
+          cache_tag="sccache-${{ runner.os }}"
+
+          mkdir -p dist
+
+          du -sh .sccache-cache > dist/sccache-cache-size.txt 2>&1 || true
+
+          sudo tar --zstd -cf dist/sccache-cache.tar.zst -C .sccache-cache . || true
+
+          sudo chown "$USER:$USER" dist/sccache-cache.tar.zst 2>/dev/null || true
+
+          if [[ -s dist/sccache-cache.tar.zst ]]; then
+
+            if ! gh release view "$cache_tag" -R "$ARTIFACT_REPO" >/dev/null 2>&1; then
+              gh release create "$cache_tag" -R "$ARTIFACT_REPO" --title "$cache_tag compiler cache" --notes "Rolling sccache compiler cache for Linux CI" --latest=false
+            fi
+
+            gh release upload "$cache_tag" -R "$ARTIFACT_REPO" dist/sccache-cache.tar.zst dist/sccache-cache-size.txt --clobber
+
+          fi
+
+      - name: Save UE build products cache to private builds repo
+
+        if: steps.runtime_guard.outputs.should_run == 'true' && vars.ENABLE_UE_BUILD_PRODUCTS_CACHE == 'true' && always()
+
+        continue-on-error: true
+
+        shell: bash
+
+        env:
+
+          GH_TOKEN: ${{ secrets.ARTIFACT_REPO_TOKEN }}
+
+        run: |
+
+          set -euo pipefail
+
+          cache_tag="linux-build-cache-${{ runner.os }}"
+
+          mkdir -p dist
+
+          (
+
+            cd source
+
+            : > ../dist/ue-build-products-files.txt
+
+            for path in Binaries Intermediate Saved/UnrealBuildTool Plugins; do
+
+              [[ -e "$path" ]] || continue
+
+              if [[ "$path" == "Plugins" ]]; then
+
+                find Plugins -type f \( -path '*/Binaries/*' -o -path '*/Intermediate/*' \) -print >> ../dist/ue-build-products-files.txt
+
+              else
+
+                find "$path" -type f -print >> ../dist/ue-build-products-files.txt
+
+              fi
+
+            done
+
+            echo "object_count=$(grep -c '\.o$' ../dist/ue-build-products-files.txt || true)" > ../dist/ue-build-products-size.txt
+
+            echo "file_count=$(wc -l < ../dist/ue-build-products-files.txt)" >> ../dist/ue-build-products-size.txt
+
+            grep '\.o$' ../dist/ue-build-products-files.txt | head -50 > ../dist/ue-build-products-object-sample.txt || true
+
+            sudo tar --zstd -cf ../dist/ue-build-products.tar.zst -T ../dist/ue-build-products-files.txt 2>/dev/null || true
+
+          )
+
+          sudo chown "$USER:$USER" dist/ue-build-products.tar.zst 2>/dev/null || true
+
+          du -sh dist/ue-build-products.tar.zst >> dist/ue-build-products-size.txt 2>&1 || true
+
+          if [[ -s dist/ue-build-products.tar.zst ]]; then
+
+            if ! gh release view "$cache_tag" -R "$ARTIFACT_REPO" >/dev/null 2>&1; then
+              gh release create "$cache_tag" -R "$ARTIFACT_REPO" --title "$cache_tag UE build products" --notes "Rolling UE Binaries/Intermediate cache for Linux CI" --latest=false
+            fi
+
+            gh release upload "$cache_tag" -R "$ARTIFACT_REPO" dist/ue-build-products.tar.zst dist/ue-build-products-size.txt dist/ue-build-products-files.txt dist/ue-build-products-object-sample.txt --clobber
+
+          fi
+
+      - name: Write manifest
+
+        if: steps.runtime_guard.outputs.should_run == 'true' && always()
+
+        shell: bash
+
+        run: |
+
+          set -euo pipefail
+
+          mkdir -p dist
+
+          sudo chown -R "$USER:$USER" dist 2>/dev/null || true
+
+          chmod -R u+rwX dist 2>/dev/null || true
+
+          build_exit_code="${{ steps.build.outputs.exit_code }}"
+
+          [[ -n "$build_exit_code" ]] || build_exit_code="$(cat dist/build-exit-code.txt 2>/dev/null || true)"
+
+          [[ -n "$build_exit_code" ]] || build_exit_code=1
+
+          printf "%s\n" "$build_exit_code" > dist/build-exit-code.txt
+
+          BUILD_EXIT_CODE="$build_exit_code" python3 -c 'import json, os; json.dump({"sourceRepo": os.environ["SOURCE_REPO"], "sourceRef": os.environ.get("SOURCE_REF", ""), "sourceSha": os.environ.get("SOURCE_SHA", ""), "runId": os.environ["GITHUB_RUN_ID"], "runNumber": os.environ["GITHUB_RUN_NUMBER"], "target": os.environ["TARGET_NAME"], "platform": "Linux", "configuration": "Development", "buildExitCode": os.environ["BUILD_EXIT_CODE"]}, open("dist/manifest.json", "w", encoding="utf-8"), indent=2)'
+
+      - name: Drop empty artifacts
+
+        if: steps.runtime_guard.outputs.should_run == 'true' && always()
+
+        shell: bash
+
+        run: find dist -type f -size 0 -delete 2>/dev/null || true
+
+      - name: Publish private release with logs
+
+        if: steps.runtime_guard.outputs.should_run == 'true' && always()
+
+        shell: bash
+
+        env:
+
+          GH_TOKEN: ${{ secrets.ARTIFACT_REPO_TOKEN }}
+
+        run: |
+
+          set -euo pipefail
+
+          tag="linux-${GITHUB_RUN_NUMBER}"
+
+          body_file="dist/release-body.md"
+
+          cat > "$body_file" <<EOF
+
+          Source: ${SOURCE_REPO}
+
+          Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+
+          Build exit code: ${{ steps.build.outputs.exit_code }}
+
+          EOF
+
+          if ! gh release view "$tag" -R "$ARTIFACT_REPO" >/dev/null 2>&1; then
+            gh release create "$tag" -R "$ARTIFACT_REPO" --title "Linux build ${GITHUB_RUN_NUMBER}" --notes-file "$body_file" --latest=false
+          fi
+
+          files=(
+
+            dist/MyProject-Linux-*.tar.gz
+
+            dist/manifest.json
+
+            dist/build.log
+
+            dist/sccache-stats.txt
+
+            dist/build-exit-code.txt
+
+            dist/ubt.log
+
+            dist/intermediate-diagnostics-files.txt
+
+            dist/intermediate-diagnostics.tar.gz
+
+          )
+
+          for file in "${files[@]}"; do
+
+            [[ -f "$file" && -s "$file" ]] || continue
+
+            for attempt in 1 2 3; do
+
+              if gh release upload "$tag" -R "$ARTIFACT_REPO" "$file" --clobber; then
+
+                break
+
+              fi
+
+              if [[ "$attempt" == "3" ]]; then
+
+                exit 1
+
+              fi
+
+              sleep $((attempt * 10))
+
+            done
+
+          done
+
+      - name: Prune old linux-build releases
+
+        if: steps.runtime_guard.outputs.should_run == 'true' && always()
+
+        shell: bash
+
+        env:
+
+          GH_TOKEN: ${{ secrets.ARTIFACT_REPO_TOKEN }}
+
+        run: |
+
+          set -euo pipefail
+
+          gh release list -R "$ARTIFACT_REPO" --limit 100 --json tagName,createdAt \
+            --jq '[.[] | select(.tagName | startswith("linux-"))] | sort_by(.createdAt) | reverse | .[20:] | .[].tagName' | \
+            while IFS= read -r old_tag; do
+              [[ -n "$old_tag" ]] || continue
+              gh release delete "$old_tag" -R "$ARTIFACT_REPO" --cleanup-tag --yes || true
+            done
+
+      - name: Report Linux build failure to private source issues
+
+        if: steps.runtime_guard.outputs.should_run == 'true' && always() && steps.build.outputs.exit_code != '0'
+
+        shell: bash
+
+        env:
+
+          GH_TOKEN: ${{ secrets.SOURCE_REPO_TOKEN }}
+
+          SOURCE_REPO: ${{ env.SOURCE_REPO }}
+
+          SOURCE_REF: ${{ env.SOURCE_REF }}
+
+          SOURCE_SHA: ${{ env.SOURCE_SHA }}
+
+          BUILD_EXIT_CODE: ${{ steps.build.outputs.exit_code }}
+
+        run: |
+
+          set -euo pipefail
+
+          title="CI: Linux build failed"
+
+          body="/tmp/linux-build-failure.md"
+
+          release_url="https://github.com/${ARTIFACT_REPO}/releases/tag/linux-${GITHUB_RUN_NUMBER}"
+
+          tail_file="/tmp/build-log-tail.txt"
+
+          if [[ -f dist/build.log ]]; then
+
+            tail -n 160 dist/build.log > "$tail_file" || true
+
+          else
+
+            echo "dist/build.log missing" > "$tail_file"
+
+          fi
+
+          cat > "$body" <<EOF
+
+          # Linux build failed
+
+          - Source repo: ${SOURCE_REPO}
+
+          - Source ref: ${SOURCE_REF}
+
+          - Source sha: ${SOURCE_SHA:-unknown}
+
+          - Public run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+
+          - Private release/logs: ${release_url}
+
+          - Build exit code: ${BUILD_EXIT_CODE:-unknown}
+
+          - Time: $(date -u +%FT%TZ)
+
+          ## Build log tail
+
+          \`\`\`text
+
+          $(cat "$tail_file")
+
+          \`\`\`
+
+          EOF
+
+          issue="$(gh issue list -R "$SOURCE_REPO" --state all --search "$title in:title" --json number,title --jq '.[] | select(.title == "CI: Linux build failed") | .number' | head -n 1 || true)"
+
+          if [[ -z "$issue" ]]; then
+
+            gh issue create -R "$SOURCE_REPO" --title "$title" --body-file "$body" >/dev/null
+
+          else
+
+            gh issue edit "$issue" -R "$SOURCE_REPO" --body-file "$body" >/dev/null
+
+            gh issue reopen "$issue" -R "$SOURCE_REPO" >/dev/null 2>&1 || true
+
+          fi
+
+      - name: Fail job if build failed
+
+        if: steps.runtime_guard.outputs.should_run == 'true' && steps.build.outputs.exit_code != '0'
+
+        shell: bash
+
+        run: exit 1
+
