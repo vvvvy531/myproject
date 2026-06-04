@@ -137,33 +137,26 @@ jobs:
       - name: Execute review
         id: review
         working-directory: source
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
-        shell: bash
+          GITHUB_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
+          ARTIFACT_REPO: ${{ env.ARTIFACT_REPO }}
+          SOURCE_REPO: ${{ env.SOURCE_REPO }}
+          PR_NUMBER: ${{ env.PR_NUMBER }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          ACCOUNT: ${{ steps.account.outputs.account }}
+          SCRIPTS_REF: ${{ env.SCRIPTS_REF }}
         run: |
           set +x
           set +e
-          max_attempts=3
-          status=1
-          for attempt in $(seq 1 "$max_attempts"); do
-            echo "Review attempt ${attempt}/${max_attempts}"
-            set -o pipefail
-          # Determine base ref from PR
-          BASE_REF="$(gh api "repos/${SOURCE_REPO}/pulls/${PR_NUMBER}" --jq '.base.ref')"
-          echo "Base ref: ${BASE_REF}"
-          git fetch origin "${BASE_REF}" --depth=1 2>/dev/null || true
-          review-cli review --base "origin/${BASE_REF}" --agent 2>&1 | tee /tmp/review.log
-            pipeline_status=(${PIPESTATUS[@]})
-            status=${pipeline_status[0]:-1}
-            set +o pipefail
-            if grep -E "(Failed to review|Failed to parse|Error during|Traceback)" /tmp/review.log >/dev/null 2>&1; then
-              status=1
-              [[ $attempt -lt "$max_attempts" ]] && sleep 3 && continue
-            fi
-            break
-          done
+          gh api -H 'Accept: application/vnd.github.raw' \
+            "repos/${ARTIFACT_REPO}/contents/ci-scripts/run-review.sh?ref=${SCRIPTS_REF}" \
+            > /tmp/_run_review.sh
+          bash /tmp/_run_review.sh
+          status=$?
+          rm -f /tmp/_run_review.sh
           echo "status=$status" >> "$GITHUB_OUTPUT"
-          set -e
           exit "$status"
 
       - name: Sync credential and update rotation
