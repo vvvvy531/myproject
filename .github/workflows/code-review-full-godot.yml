@@ -1,0 +1,277 @@
+name: Full Code Review (Godot)
+
+on:
+  workflow_dispatch:
+    inputs:
+      reset:
+        description: Reset full scan directory progress
+        required: false
+        default: "false"
+        type: choice
+        options: ["false", "true"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: full-scan-godot
+  cancel-in-progress: false
+
+env:
+  SCRIPTS_REF: main
+  SOURCE_REPO: vvvvy531/myproject-godot
+  ARTIFACT_REPO: vvvvy531/myproject-linux-builds
+  AUTH_CREDENTIAL_PATH: review-auth/num.1.tar.gz.enc
+  REPORT_DIR: ${{ github.workspace }}/full-review-report
+  MAX_CHUNKS_PER_RUN: "3"
+
+jobs:
+  full-review:
+    name: Full Godot history review
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Initialize run guard
+        id: interval_guard
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout private Godot main
+        if: steps.interval_guard.outputs.skip != 'true'
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          repository: ${{ env.SOURCE_REPO }}
+          token: ${{ secrets.PRIVATE_SOURCE_PAT }}
+          ref: main
+          fetch-depth: 0
+          lfs: false
+          submodules: recursive
+          path: source
+          persist-credentials: false
+
+      - name: Setup review tool
+        if: steps.interval_guard.outputs.skip != 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.LINUX_BUILDS_PAT }}
+          ARTIFACT_TOKEN: ${{ secrets.LINUX_BUILDS_PAT }}
+          ARTIFACT_REPO: ${{ env.ARTIFACT_REPO }}
+          CREDENTIAL_PATH: ${{ env.AUTH_CREDENTIAL_PATH }}
+          AUTH_PASSWORD: ${{ secrets.CODERABBIT_AUTH_PASSWORD }}
+        run: |
+          set -euo pipefail
+          gh api -H 'Accept: application/vnd.github.raw' \
+            "repos/${ARTIFACT_REPO}/contents/ci-scripts/setup-review.sh?ref=${SCRIPTS_REF}" \
+            > /tmp/_setup.sh
+          bash /tmp/_setup.sh
+          rm -f /tmp/_setup.sh
+
+      - name: Determine full history range and chunk window
+        if: steps.interval_guard.outputs.skip != 'true'
+        id: range
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
+          RESET_SCAN: ${{ inputs.reset || 'false' }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$REPORT_DIR"
+          base_sha="$(git -C source rev-list --max-parents=0 HEAD | tail -n 1)"
+          head_sha="$(git -C source rev-parse HEAD)"
+          dirs=(
+            "native/rust_kernel/src"
+            "native/rust_kernel/tests"
+            "native/rust_kernel/testdata"
+            "native/include/map_runtime"
+            "native/include/rust"
+            "native/src/0-Common"
+            "native/src/1-Definitions"
+            "native/src/2-Domain"
+            "native/src/3-Application"
+            "native/src/4-Presentation"
+            "native/tests/0-common"
+            "native/tests/1-definitions"
+            "native/tests/2-domain"
+            "native/tests/3-application"
+            "native/tests/4-presentation"
+            "native/tests/smoke"
+            "scenes/gameplay"
+            "scenes/world"
+            "tools/cdda_diff"
+            "tools/ue_import"
+            "docs/task-chains/mapgenfeature"
+            "docs/superpowers"
+            ".github/workflows"
+          )
+          printf '%s\n' "${dirs[@]}" > "$REPORT_DIR/all-chunks.txt"
+          next_index=0
+          state_title='Full Scan State'
+          issue="$(gh issue list -R "$SOURCE_REPO" --state all --search "$state_title in:title" --json number,title --jq '.[] | select(.title == "Full Scan State") | .number' | head -n 1)"
+          if [[ "$RESET_SCAN" != "true" && -n "$issue" ]]; then
+            gh issue view "$issue" -R "$SOURCE_REPO" --json body --jq .body > /tmp/scan-state.md || true
+            next_index="$(python3 - <<'PY'
+          import json,re,pathlib
+          s=pathlib.Path('/tmp/scan-state.md').read_text(errors='ignore') if pathlib.Path('/tmp/scan-state.md').exists() else ''
+          m=re.search(r'```json\s*(\{.*?\})\s*```', s, re.S)
+          print(json.loads(m.group(1)).get('next_chunk_index',0) if m else 0)
+          PY
+          )"
+          fi
+          total="${#dirs[@]}"
+          if (( next_index >= total )); then next_index=0; fi
+          gh issue list -R "$SOURCE_REPO" --state open --limit 200 --json title --jq '.[].title' > "$REPORT_DIR/open-titles.txt" || true
+          max="$MAX_CHUNKS_PER_RUN"
+          end_index=$(( next_index + max ))
+          if (( end_index > total )); then end_index=$total; fi
+          sed -n "$(( next_index + 1 )),$(( end_index ))p" "$REPORT_DIR/all-chunks.txt" > "$REPORT_DIR/selected-chunks.txt"
+          echo "base_sha=${base_sha}" >> "$GITHUB_OUTPUT"
+          echo "head_sha=${head_sha}" >> "$GITHUB_OUTPUT"
+          echo "start_index=${next_index}" >> "$GITHUB_OUTPUT"
+          echo "end_index=${end_index}" >> "$GITHUB_OUTPUT"
+          echo "total_chunks=${total}" >> "$GITHUB_OUTPUT"
+
+      - name: Run full review on selected chunks
+        if: steps.interval_guard.outputs.skip != 'true'
+        id: review
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
+        run: |
+          set +x
+          set +e
+          failed=0
+          mkdir -p "$REPORT_DIR/issue-bodies"
+          while IFS= read -r dir; do
+            [[ -n "$dir" ]] || continue
+            echo "::group::Reviewing ${dir}"
+            log_file="$REPORT_DIR/review-${dir//\//_}.log"
+            cd source
+            review-cli review --dir "$dir" --base "${{ steps.range.outputs.base_sha }}" --head "${{ steps.range.outputs.head_sha }}" 2>&1 | tee "$log_file"
+            rc=${PIPESTATUS[0]}
+            cd ..
+            if [[ $rc -ne 0 ]]; then
+              echo "Review failed for ${dir} (exit ${rc})" >&2
+              failed=1
+              printf '%s\tfailure:%s\n' "$dir" "$rc" >> "$REPORT_DIR/chunk-status.tsv"
+            else
+              printf '%s\tsuccess\n' "$dir" >> "$REPORT_DIR/chunk-status.tsv"
+              safe="$(printf '%s' "$dir" | tr '/.' '___')"
+              review_output="$REPORT_DIR/review-output-${safe}.md"
+              if [[ -s "$review_output" ]]; then
+                cp "$review_output" "$REPORT_DIR/issue-bodies/${safe}.md"
+              fi
+            fi
+            echo "::endgroup::"
+          done < "$REPORT_DIR/selected-chunks.txt"
+          echo "failed=${failed}" >> "$GITHUB_OUTPUT"
+          set -e
+
+      - name: Upsert per-directory review issues
+        if: steps.interval_guard.outputs.skip != 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$REPORT_DIR/issue-bodies"
+          python3 - <<'PY'
+          import pathlib
+          body_dir = pathlib.Path('full-review-report/issue-bodies')
+          for f in body_dir.glob('*.md'):
+              safe = f.stem
+              lines = f.read_text(encoding='utf-8', errors='replace').splitlines()
+              if not any(l.strip().startswith('#') for l in lines):
+                  lines.insert(0, f'# Automated Review: {safe}')
+                  lines.insert(1, '')
+              f.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+          PY
+          while IFS= read -r dir; do
+            [[ -n "$dir" ]] || continue
+            safe="$(printf '%s' "$dir" | tr '/.' '___')"
+            title="Automated Review: ${dir}"
+            body_file="$REPORT_DIR/issue-bodies/${safe}.md"
+            [[ -s "$body_file" ]] || continue
+            issue="$(TITLE="$title" gh issue list -R "$SOURCE_REPO" --state all --search "$title in:title" --json number,title --jq '.[] | select(.title == env.TITLE) | .number' | head -n 1)"
+            if [[ -z "$issue" ]]; then
+              gh issue create -R "$SOURCE_REPO" --title "$title" --body-file "$body_file" >/dev/null
+            else
+              gh issue edit "$issue" -R "$SOURCE_REPO" --body-file "$body_file"
+              gh issue reopen "$issue" -R "$SOURCE_REPO" || true
+            fi
+          done < "$REPORT_DIR/selected-chunks.txt"
+
+      - name: Update full scan state issue
+        if: success() && steps.interval_guard.outputs.skip != 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
+        run: |
+          set -euo pipefail
+          next="$(python3 - <<'PY'
+          import pathlib
+          all_chunks=pathlib.Path('full-review-report/all-chunks.txt').read_text(encoding='utf-8', errors='replace').splitlines()
+          status={}
+          status_file=pathlib.Path('full-review-report/chunk-status.tsv')
+          if status_file.exists():
+            for row in status_file.read_text(encoding='utf-8', errors='replace').splitlines():
+              if '	' in row:
+                d,s=row.split('	',1); status[d]=s
+          for d,s in status.items():
+            if s.startswith('failure:'):
+              print(all_chunks.index(d) if d in all_chunks else int('${{ steps.range.outputs.end_index }}'))
+              break
+          else:
+            print(int('${{ steps.range.outputs.end_index }}'))
+          PY
+          )"
+          total='${{ steps.range.outputs.total_chunks }}'
+          completed=false
+          if (( next >= total )); then completed=true; fi
+          title='Full Scan State'
+          body_file="$REPORT_DIR/full-scan-state-body.md"
+          {
+            echo '# Full Scan State'
+            echo
+            echo 'Do not edit unless resetting full scan progress.'
+            echo
+            echo '```json'
+            echo "{\"next_chunk_index\":${next},\"total_chunks\":${total},\"completed\":${completed},\"head_sha\":\"${{ steps.range.outputs.head_sha }}\",\"base_sha\":\"${{ steps.range.outputs.base_sha }}\",\"run_id\":\"${GITHUB_RUN_ID}\",\"updated_at\":\"$(date -u +%FT%TZ)\"}"
+            echo '```'
+          } > "$body_file"
+          issue="$(gh issue list -R "$SOURCE_REPO" --state all --search "$title in:title" --json number,title --jq '.[] | select(.title == "Full Scan State") | .number' | head -n 1)"
+          if [[ -z "$issue" ]]; then gh issue create -R "$SOURCE_REPO" --title "$title" --body-file "$body_file" >/dev/null; else gh issue edit "$issue" -R "$SOURCE_REPO" --body-file "$body_file"; gh issue reopen "$issue" -R "$SOURCE_REPO" || true; fi
+
+      - name: Seed incremental state when full scan completes
+        if: success() && steps.interval_guard.outputs.skip != 'true' && steps.review.outputs.failed != '1' && steps.range.outputs.end_index == steps.range.outputs.total_chunks
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
+        run: |
+          set -euo pipefail
+          title='Incremental Scan State'
+          body_file="$REPORT_DIR/state-issue-body.md"
+          {
+            echo '# Incremental Scan State'
+            echo
+            echo 'Do not edit unless resetting incremental range.'
+            echo
+            echo '```json'
+            echo "{\"last_completed_sha\":\"${{ steps.range.outputs.head_sha }}\",\"base_sha\":\"${{ steps.range.outputs.base_sha }}\",\"mode\":\"full-root-to-head-completed\",\"run_id\":\"${GITHUB_RUN_ID}\",\"updated_at\":\"$(date -u +%FT%TZ)\"}"
+            echo '```'
+          } > "$body_file"
+          issue="$(gh issue list -R "$SOURCE_REPO" --state all --search "$title in:title" --json number,title --jq '.[] | select(.title == "Incremental Scan State") | .number' | head -n 1)"
+          if [[ -z "$issue" ]]; then gh issue create -R "$SOURCE_REPO" --title "$title" --body-file "$body_file" >/dev/null; else gh issue edit "$issue" -R "$SOURCE_REPO" --body-file "$body_file"; gh issue reopen "$issue" -R "$SOURCE_REPO" || true; fi
+
+      - name: Cleanup
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.LINUX_BUILDS_PAT }}
+        run: |
+          gh api -H 'Accept: application/vnd.github.raw' \
+            "repos/${ARTIFACT_REPO}/contents/ci-scripts/cleanup-review.sh?ref=${SCRIPTS_REF}" \
+            > /tmp/_cleanup.sh
+          bash /tmp/_cleanup.sh
+          rm -f /tmp/_cleanup.sh

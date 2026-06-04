@@ -1,0 +1,122 @@
+name: Automated PR Review X
+
+on:
+  repository_dispatch:
+    types: [private-review-x]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+  statuses: write
+
+concurrency:
+  group: review-x-${{ github.event.client_payload.source_repo }}-${{ github.event.client_payload.pr_number }}
+  cancel-in-progress: true
+
+env:
+  SCRIPTS_REF: main
+  ARTIFACT_REPO: vvvvy531/myproject-linux-builds
+
+jobs:
+  review:
+    name: Automated PR Review
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      SOURCE_REPO: ${{ github.event.client_payload.source_repo }}
+      PR_NUMBER: ${{ github.event.client_payload.pr_number }}
+      HEAD_SHA: ${{ github.event.client_payload.head_sha }}
+    steps:
+      - name: Validate PR payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$SOURCE_REPO" in
+            vvvvy531/myproject-source) ;;
+            *) echo "Invalid source_repo payload" >&2; exit 1 ;;
+          esac
+          case "$PR_NUMBER" in
+            ''|*[!0-9]*) echo "Invalid pr_number payload" >&2; exit 1 ;;
+          esac
+          echo "Review target: ${SOURCE_REPO}#${PR_NUMBER}"
+
+      - name: Mark review pending
+        if: env.HEAD_SHA != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set +x
+          gh api "repos/${SOURCE_REPO}/statuses/${HEAD_SHA}" \
+            -f state=pending -f context="Public Codex PR Review" \
+            -f description="Codex review in progress" -f target_url="$RUN_URL"
+
+      - name: Checkout private source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          repository: ${{ env.SOURCE_REPO }}
+          token: ${{ secrets.PRIVATE_SOURCE_PAT }}
+          ref: refs/pull/${{ env.PR_NUMBER }}/head
+          fetch-depth: 0
+          lfs: false
+          submodules: recursive
+          path: source
+          persist-credentials: false
+
+      - name: Execute Codex review
+        id: review
+        working-directory: source
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
+          GITHUB_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
+          ARTIFACT_TOKEN: ${{ secrets.LINUX_BUILDS_PAT }}
+          ARTIFACT_REPO: ${{ env.ARTIFACT_REPO }}
+          OPENAI_API_KEY: ${{ secrets.REVIEW_PROXY_KEY }}
+          SOURCE_REPO: ${{ env.SOURCE_REPO }}
+          PR_NUMBER: ${{ env.PR_NUMBER }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SCRIPTS_REF: ${{ env.SCRIPTS_REF }}
+        run: |
+          set +x
+          set +e
+          gh api -H 'Accept: application/vnd.github.raw' \
+            "repos/${ARTIFACT_REPO}/contents/ci-scripts/run-codex-review.sh?ref=${SCRIPTS_REF}" \
+            > /tmp/_run_codex_review.sh
+          bash /tmp/_run_codex_review.sh
+          status=$?
+          rm -f /tmp/_run_codex_review.sh
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          exit "$status"
+
+      - name: Mark review result
+        if: always() && env.HEAD_SHA != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          set +x
+          if [[ "$JOB_STATUS" == "success" ]]; then
+            state=success; description="Codex review completed"
+          else
+            state=failure; description="Codex review failed"
+          fi
+          gh api "repos/${SOURCE_REPO}/statuses/${HEAD_SHA}" \
+            -f state="$state" -f context="Public Codex PR Review" \
+            -f description="$description" -f target_url="$RUN_URL"
+
+      - name: Cleanup
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.LINUX_BUILDS_PAT }}
+        run: |
+          gh api -H 'Accept: application/vnd.github.raw' \
+            "repos/${ARTIFACT_REPO}/contents/ci-scripts/cleanup-review.sh?ref=${SCRIPTS_REF}" \
+            > /tmp/_cleanup.sh
+          bash /tmp/_cleanup.sh
+          rm -f /tmp/_cleanup.sh

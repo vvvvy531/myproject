@@ -1,0 +1,212 @@
+name: Automated PR Review A
+
+on:
+  repository_dispatch:
+    types: [private-review-a]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+  statuses: write
+
+concurrency:
+  group: review-a-rotation
+  cancel-in-progress: false
+
+env:
+  SCRIPTS_REF: main
+  ARTIFACT_REPO: vvvvy531/myproject-linux-builds
+  ROTATION_STATE_TITLE: Review Account Rotation State
+
+jobs:
+  review:
+    name: Automated PR Review
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      SOURCE_REPO: ${{ github.event.client_payload.source_repo }}
+      PR_NUMBER: ${{ github.event.client_payload.pr_number }}
+      PR_URL: ${{ format('https://github.com/{0}/pull/{1}', github.event.client_payload.source_repo, github.event.client_payload.pr_number) }}
+      HEAD_SHA: ${{ github.event.client_payload.head_sha }}
+    steps:
+      - name: Validate PR payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$SOURCE_REPO" in
+            vvvvy531/myproject-source) ;;
+            *) echo "Invalid source_repo payload" >&2; exit 1 ;;
+          esac
+          case "$PR_NUMBER" in
+            ''|*[!0-9]*) echo "Invalid pr_number payload" >&2; exit 1 ;;
+          esac
+          echo "Review target: ${SOURCE_REPO}#${PR_NUMBER}"
+
+      - name: Mark review pending
+        if: env.HEAD_SHA != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set +x
+          gh api "repos/${SOURCE_REPO}/statuses/${HEAD_SHA}" \
+            -f state=pending -f context="Public Automated PR Review" \
+            -f description="Review in progress" -f target_url="$RUN_URL"
+
+      - name: Select review account
+        id: account
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          state_file=/tmp/review-rotation-state.md
+          title="$ROTATION_STATE_TITLE"
+          issue="$(TITLE="$title" gh issue list -R "$GITHUB_REPOSITORY" --state all --search "$title in:title" --json number,title --jq '[.[] | select(.title == env.TITLE) | .number][0] // ""')"
+          if [[ -n "$issue" ]]; then
+            gh issue view "$issue" -R "$GITHUB_REPOSITORY" --json body --jq .body > "$state_file" || true
+          else
+            : > "$state_file"
+          fi
+          now="$(date -u +%s)"
+          python3 - "$state_file" "$now" <<'PY' > /tmp/review-account.env
+          import json, pathlib, re, sys
+          path = pathlib.Path(sys.argv[1])
+          now = int(sys.argv[2])
+          body = path.read_text(encoding='utf-8', errors='replace') if path.exists() else ''
+          match = re.search(r'```json\s*(\{.*?\})\s*```', body, re.S)
+          state = json.loads(match.group(1)) if match else {}
+          account = int(state.get('next_account', 2) or 2)
+          if account < 2 or account > 21:
+              account = 2
+          usage = state.get('usage', {})
+          selected = account
+          selected_count = 0
+          selected_window = now
+          for _ in list(range(2, 22)):
+              item = usage.get(str(selected), {})
+              window = int(item.get('window_start', now) or now)
+              count = int(item.get('count', 0) or 0)
+              if now - window >= 3600:
+                  window = now; count = 0
+              if count < 3:
+                  selected_count = count; selected_window = window; break
+              selected = 2 if selected == 21 else selected + 1
+          else:
+              print('No account quota available', file=sys.stderr); sys.exit(1)
+          print(f'ACCOUNT={selected}')
+          print(f'COUNT_BEFORE={selected_count}')
+          print(f'WINDOW_START={selected_window}')
+          PY
+          cat /tmp/review-account.env
+          while IFS='=' read -r key val; do
+            [[ -n "$key" ]] && echo "${key,,}=$val" >> "$GITHUB_OUTPUT"
+          done < /tmp/review-account.env
+          rm -f /tmp/review-account.env "$state_file"
+
+      - name: Checkout private source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          repository: ${{ env.SOURCE_REPO }}
+          token: ${{ secrets.PRIVATE_SOURCE_PAT }}
+          ref: refs/pull/${{ env.PR_NUMBER }}/head
+          fetch-depth: 0
+          lfs: false
+          submodules: recursive
+          path: source
+          persist-credentials: false
+
+      - name: Setup review tool
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.LINUX_BUILDS_PAT }}
+          ARTIFACT_TOKEN: ${{ secrets.LINUX_BUILDS_PAT }}
+          ARTIFACT_REPO: ${{ env.ARTIFACT_REPO }}
+          CREDENTIAL_PATH: review-auth/num.${{ steps.account.outputs.account }}.tar.gz
+          AUTH_PASSWORD: ${{ secrets.CODERABBIT_AUTH_PASSWORD }}
+        run: |
+          set -euo pipefail
+          gh api -H 'Accept: application/vnd.github.raw' \
+            "repos/${ARTIFACT_REPO}/contents/ci-scripts/setup-review.sh?ref=${SCRIPTS_REF}" \
+            > /tmp/_setup.sh
+          bash /tmp/_setup.sh
+          rm -f /tmp/_setup.sh
+
+      - name: Execute review
+        id: review
+        working-directory: source
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
+          GITHUB_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
+          ARTIFACT_REPO: ${{ env.ARTIFACT_REPO }}
+          SOURCE_REPO: ${{ env.SOURCE_REPO }}
+          PR_NUMBER: ${{ env.PR_NUMBER }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          ACCOUNT: ${{ steps.account.outputs.account }}
+          SCRIPTS_REF: ${{ env.SCRIPTS_REF }}
+        run: |
+          set +x
+          set +e
+          gh api -H 'Accept: application/vnd.github.raw' \
+            "repos/${ARTIFACT_REPO}/contents/ci-scripts/run-review.sh?ref=${SCRIPTS_REF}" \
+            > /tmp/_run_review.sh
+          bash /tmp/_run_review.sh
+          status=$?
+          rm -f /tmp/_run_review.sh
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          exit "$status"
+
+      - name: Sync credential and update rotation
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.LINUX_BUILDS_PAT }}
+          ARTIFACT_TOKEN: ${{ secrets.LINUX_BUILDS_PAT }}
+          ARTIFACT_REPO: ${{ env.ARTIFACT_REPO }}
+          ACCOUNT: ${{ steps.account.outputs.account }}
+          AUTH_PASSWORD: ${{ secrets.CODERABBIT_AUTH_PASSWORD }}
+          GITHUB_TOKEN: ${{ github.token }}
+          STATE_TITLE: ${{ env.ROTATION_STATE_TITLE }}
+          REVIEW_STATUS: ${{ steps.review.outputs.status }}
+          WINDOW_START: ${{ steps.account.outputs.window_start }}
+        run: |
+          set -euo pipefail
+          gh api -H 'Accept: application/vnd.github.raw' \
+            "repos/${ARTIFACT_REPO}/contents/ci-scripts/sync-credential.sh?ref=${SCRIPTS_REF}" \
+            > /tmp/_sync.sh
+          bash /tmp/_sync.sh
+          rm -f /tmp/_sync.sh
+
+      - name: Mark review result
+        if: always() && env.HEAD_SHA != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          JOB_STATUS: ${{ job.status }}
+          ACCOUNT: ${{ steps.account.outputs.account }}
+        run: |
+          set +x
+          if [[ "$JOB_STATUS" == "success" ]]; then
+            state=success; description="Review completed with account ${ACCOUNT}"
+          else
+            state=failure; description="Review failed with account ${ACCOUNT}"
+          fi
+          gh api "repos/${SOURCE_REPO}/statuses/${HEAD_SHA}" \
+            -f state="$state" -f context="Public Automated PR Review" \
+            -f description="$description" -f target_url="$RUN_URL"
+
+      - name: Cleanup
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.LINUX_BUILDS_PAT }}
+        run: |
+          gh api -H 'Accept: application/vnd.github.raw' \
+            "repos/${ARTIFACT_REPO}/contents/ci-scripts/cleanup-review.sh?ref=${SCRIPTS_REF}" \
+            > /tmp/_cleanup.sh
+          bash /tmp/_cleanup.sh
+          rm -f /tmp/_cleanup.sh
