@@ -186,6 +186,14 @@ jobs:
           while IFS= read -r dir; do
             [[ -n "$dir" ]] || continue
             echo "::group::Reviewing ${dir}"
+            title="Automated Review: ${dir}"
+            existing="$(TITLE="$title" GH_TOKEN="${GH_TOKEN}" gh issue list -R "$SOURCE_REPO" --state open --search "$title in:title" --json number --jq '.[] | select(.title == env.TITLE) | .number' | head -n 1)"
+            if [[ -n "$existing" ]]; then
+              echo "Skipping ${dir} -- open issue #${existing} exists"
+              printf '%s\tskipped:open-issue\n' "$dir" >> "$REPORT_DIR/chunk-status.tsv"
+              echo "::endgroup::"
+              continue
+            fi
             cd source
             if [[ "$dir" == "(root-files)" ]]; then
               coderabbit review --base-commit "${{ steps.range.outputs.base_sha }}" --agent > /tmp/review-output.jsonl 2>/tmp/review-stderr.log
