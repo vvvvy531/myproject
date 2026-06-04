@@ -16,9 +16,6 @@ jobs:
       BUILDS_REPO: vvvvy531/myproject-linux-builds
       BUNDLE_PATH: review-config-bundle.tar.gz
     steps:
-      - name: Checkout updater scripts
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-
       - name: Download current bundle
         env:
           GH_TOKEN: ${{ secrets.LINUX_BUILDS_PAT }}
