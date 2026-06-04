@@ -201,13 +201,15 @@ jobs:
           set +e
           failed=0
           mkdir -p "$REPORT_DIR/issue-bodies"
+          echo "Fetching open review issues..."
+          open_titles="$(gh issue list -R "$SOURCE_REPO" --state open --search 'Automated Review in:title' --json title --limit 200 --jq '.[].title' 2>/dev/null || true)"
+          echo "Found open issues: $(echo "$open_titles" | wc -l)"
           while IFS= read -r dir; do
             [[ -n "$dir" ]] || continue
             echo "::group::Reviewing ${dir}"
             title="Automated Review: ${dir}"
-            existing="$(TITLE="$title" GH_TOKEN="${GH_TOKEN}" gh issue list -R "$SOURCE_REPO" --state open --search "$title in:title" --json number --jq '.[] | select(.title == env.TITLE) | .number' | head -n 1)"
-            if [[ -n "$existing" ]]; then
-              echo "Skipping ${dir} -- open issue #${existing} exists"
+            if echo "$open_titles" | grep -qFx "$title"; then
+              echo "Skipping ${dir} -- open issue exists"
               printf '%s\tskipped:open-issue\n' "$dir" >> "$REPORT_DIR/chunk-status.tsv"
               echo "::endgroup::"
               continue
@@ -312,23 +314,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          next="$(python3 - <<'PY'
-          import pathlib
-          all_chunks=pathlib.Path('full-review-report/all-chunks.txt').read_text(encoding='utf-8', errors='replace').splitlines()
-          status={}
-          status_file=pathlib.Path('full-review-report/chunk-status.tsv')
-          if status_file.exists():
-            for row in status_file.read_text(encoding='utf-8', errors='replace').splitlines():
-              if '	' in row:
-                d,s=row.split('	',1); status[d]=s
-          for d,s in status.items():
-            if s.startswith('failure:'):
-              print(all_chunks.index(d) if d in all_chunks else int('${{ steps.range.outputs.end_index }}'))
-              break
-          else:
-            print(int('${{ steps.range.outputs.end_index }}'))
-          PY
-          )"
+          next='${{ steps.range.outputs.end_index }}'
           total='${{ steps.range.outputs.total_chunks }}'
           completed=false
           if (( next >= total )); then completed=true; fi
