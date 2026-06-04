@@ -93,7 +93,7 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
-          
+          PUBLIC_TOKEN: ${{ github.token }}
           RESET_SCAN: ${{ inputs.reset || 'false' }}
         run: |
           set -euo pipefail
@@ -149,9 +149,9 @@ jobs:
           PY
           next_index=0
           state_title='Full Scan State'
-          issue="$(gh issue list --state all --search "$state_title in:title" --json number,title --jq '.[] | select(.title == "Full Scan State") | .number' | head -n 1)"
+          issue="$(GH_TOKEN="$PUBLIC_TOKEN" gh issue list --state all --search "$state_title in:title" --json number,title --jq '.[] | select(.title == "Full Scan State") | .number' | head -n 1)"
           if [[ "$RESET_SCAN" != "true" && -n "$issue" ]]; then
-            gh issue view "$issue" --json body --jq .body > /tmp/scan-state.md || true
+            GH_TOKEN="$PUBLIC_TOKEN" gh issue view "$issue" --json body --jq .body > /tmp/scan-state.md || true
             next_index="$(python3 - <<'PY'
           import json,re,pathlib
           s=pathlib.Path('/tmp/scan-state.md').read_text(errors='ignore') if pathlib.Path('/tmp/scan-state.md').exists() else ''
