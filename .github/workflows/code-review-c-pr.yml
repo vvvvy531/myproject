@@ -56,7 +56,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
           GITHUB_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
-          AI_KEY: ${{ secrets.REVIEW_PROXY_KEY }}
+          AI_KEY: ${{ secrets.HF_TOKEN }}
           AI_URL: ${{ secrets.REVIEW_PROXY_URL }}
           AI_MODEL: ${{ secrets.REVIEW_MODEL || 'latest-sonnet' }}
           ARTIFACT_TOKEN: ${{ secrets.LINUX_BUILDS_PAT }}
