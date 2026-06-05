@@ -75,7 +75,9 @@ jobs:
           ARTIFACT_TOKEN: ${{ secrets.LINUX_BUILDS_PAT }}
           ARTIFACT_REPO: ${{ env.ARTIFACT_REPO }}
           OPENAI_API_KEY: ${{ secrets.REVIEW_PROXY_KEY }}
-          OPENAI_BASE_URL: ${{ secrets.REVIEW_PROXY_URL }}
+          CODEX_BASE_URL: ${{ secrets.REVIEW_PROXY_URL }}
+          OPENAI_MODEL: ${{ secrets.REVIEW_MODEL || 'o4-mini' }}
+          CODEX_WIRE_API: responses
           SOURCE_REPO: ${{ env.SOURCE_REPO }}
           PR_NUMBER: ${{ env.PR_NUMBER }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
