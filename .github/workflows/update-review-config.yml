@@ -89,16 +89,19 @@ jobs:
           GH_TOKEN: ${{ secrets.LINUX_BUILDS_PAT }}
         run: |
           set -euo pipefail
-          B64=$(base64 -w0 /tmp/review-config-bundle.tar.gz)
+          # Write base64 to file to avoid ARG_MAX limit
+          base64 -w0 /tmp/review-config-bundle.tar.gz > /tmp/b64-content
           EXISTING_SHA=$(gh api "repos/${ARTIFACT_REPO}/contents/review-config-bundle.tar.gz?ref=main" --jq '.sha' 2>/dev/null || echo "")
-          BODY=$(jq -n \
+          # Use --rawfile to read content from file instead of --arg
+          jq -n \
             --arg msg "chore: update claude review bundle $(date -u +%Y-%m-%d)" \
-            --arg content "$B64" \
+            --rawfile content /tmp/b64-content \
             --arg sha "$EXISTING_SHA" \
-            '{message: $msg, content: $content, sha: (if $sha != "" then $sha else null end)}')
-          echo "$BODY" > /tmp/upload-claude.json
+            '{message: $msg, content: $content, sha: (if $sha != "" then $sha else null end)}' \
+            > /tmp/upload-claude.json
           gh api --method PUT "repos/${ARTIFACT_REPO}/contents/review-config-bundle.tar.gz" \
             --input /tmp/upload-claude.json --jq '.commit.sha'
+          rm -f /tmp/b64-content /tmp/upload-claude.json
           echo "Claude bundle uploaded"
 
   update-codex-bundle:
@@ -111,30 +114,38 @@ jobs:
           npm install -g @openai/codex
           codex --version
 
+      - name: Download current bundle
+        env:
+          GH_TOKEN: ${{ secrets.LINUX_BUILDS_PAT }}
+        run: |
+          set -euo pipefail
+          gh api -H 'Accept: application/vnd.github.raw' \
+            "repos/${ARTIFACT_REPO}/contents/ci-scripts/codex-review-bundle.tar.gz?ref=main" \
+            > /tmp/current-codex-bundle.tar.gz 2>/dev/null || true
+          if [[ -s /tmp/current-codex-bundle.tar.gz ]]; then
+            tar -xzf /tmp/current-codex-bundle.tar.gz -C "$HOME" 2>/dev/null || true
+            echo "Current codex bundle restored"
+          fi
+
       - name: Install plugins
         env:
           OPENAI_API_KEY: ${{ secrets.REVIEW_PROXY_KEY }}
         run: |
+          set +e
           codex plugin add superpowers@openai-curated 2>&1 || true
           codex plugin add codex-security@openai-curated 2>&1 || true
 
       - name: Package Codex bundle
         run: |
-          cd $HOME
+          set -euo pipefail
+          cd "$HOME"
+          # Package entire .codex directory, excluding unnecessary files
           tar -czf /tmp/codex-review-bundle.tar.gz \
-            --exclude=.git \
-            --exclude=node_modules \
-            --exclude=__pycache__ \
-            --exclude=.staging \
-            .codex/config.toml \
-            .codex/version.json \
-            .codex/installation_id \
-            .codex/skills/ \
-            .codex/.tmp/marketplaces/ \
-            .codex/.tmp/plugins/plugins/superpowers/ \
-            .codex/.tmp/plugins/plugins/codex-security/ \
-            .codex/.tmp/plugins/.agents/ \
-            2>/dev/null
+            --exclude='.git' \
+            --exclude='node_modules' \
+            --exclude='__pycache__' \
+            --exclude='.staging' \
+            .codex/ 2>/dev/null
           echo "Codex bundle size: $(ls -lh /tmp/codex-review-bundle.tar.gz | awk '{print $5}')"
 
       - name: Upload Codex bundle
@@ -142,14 +153,17 @@ jobs:
           GH_TOKEN: ${{ secrets.LINUX_BUILDS_PAT }}
         run: |
           set -euo pipefail
-          B64=$(base64 -w0 /tmp/codex-review-bundle.tar.gz)
+          # Write base64 to file to avoid ARG_MAX limit
+          base64 -w0 /tmp/codex-review-bundle.tar.gz > /tmp/b64-content
           EXISTING_SHA=$(gh api "repos/${ARTIFACT_REPO}/contents/ci-scripts/codex-review-bundle.tar.gz?ref=main" --jq '.sha' 2>/dev/null || echo "")
-          BODY=$(jq -n \
+          # Use --rawfile to read content from file instead of --arg
+          jq -n \
             --arg msg "chore: update codex review bundle $(date -u +%Y-%m-%d)" \
-            --arg content "$B64" \
+            --rawfile content /tmp/b64-content \
             --arg sha "$EXISTING_SHA" \
-            '{message: $msg, content: $content, sha: (if $sha != "" then $sha else null end)}')
-          echo "$BODY" > /tmp/upload-codex.json
+            '{message: $msg, content: $content, sha: (if $sha != "" then $sha else null end)}' \
+            > /tmp/upload-codex.json
           gh api --method PUT "repos/${ARTIFACT_REPO}/contents/ci-scripts/codex-review-bundle.tar.gz" \
             --input /tmp/upload-codex.json --jq '.commit.sha'
+          rm -f /tmp/b64-content /tmp/upload-codex.json
           echo "Codex bundle uploaded"
