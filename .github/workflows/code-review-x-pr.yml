@@ -74,7 +74,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
           ARTIFACT_TOKEN: ${{ secrets.LINUX_BUILDS_PAT }}
           ARTIFACT_REPO: ${{ env.ARTIFACT_REPO }}
-          OPENAI_API_KEY: ${{ secrets.HF_TOKEN }}
+          OPENAI_API_KEY: ${{ secrets.REVIEW_PROXY_KEY }}
           SOURCE_REPO: ${{ env.SOURCE_REPO }}
           PR_NUMBER: ${{ env.PR_NUMBER }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
