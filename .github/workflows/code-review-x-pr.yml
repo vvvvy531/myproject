@@ -74,7 +74,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
           ARTIFACT_TOKEN: ${{ secrets.LINUX_BUILDS_PAT }}
           ARTIFACT_REPO: ${{ env.ARTIFACT_REPO }}
-          OPENAI_API_KEY: ${{ secrets.REVIEW_PROXY_KEY }}
+          CODEX_API_KEY: ${{ secrets.REVIEW_PROXY_KEY }}
           CODEX_BASE_URL: ${{ secrets.REVIEW_PROXY_URL }}
           OPENAI_MODEL: ${{ secrets.REVIEW_MODEL || 'o4-mini' }}
           CODEX_WIRE_API: responses
