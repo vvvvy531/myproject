@@ -47,7 +47,7 @@ jobs:
           echo "Solving issues for: $SOURCE_REPO (max $MAX_ISSUES)"
 
       - name: Checkout private source
-        uses: actions/checkout@34e114876b0c11c390a56381ad16ebd13914f8d5
+        uses: actions/checkout@v4
         with:
           repository: ${{ env.SOURCE_REPO }}
           token: ${{ secrets.PRIVATE_SOURCE_PAT }}
