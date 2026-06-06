@@ -1,8 +1,6 @@
 name: Codex Issue Solver
 
 on:
-  schedule:
-    - cron: '0 */6 * * *'  # Every 6 hours
   repository_dispatch:
     types: [codex-solve-issues]
   workflow_dispatch:
