@@ -65,23 +65,6 @@ jobs:
           path: source
           persist-credentials: false
 
-      - name: Write Codex secrets to file
-        env:
-          _CODEX_API_KEY: ${{ secrets.REVIEW_PROXY_KEY }}
-          _CODEX_BASE_URL: ${{ secrets.REVIEW_PROXY_URL }}
-          _CODEX_MODEL: ${{ secrets.REVIEW_MODEL || 'o4-mini' }}
-          _CODEX_WIRE_API: responses
-        shell: bash
-        run: |
-          set +x
-          cat > /tmp/codex-secrets.env <<SECRETS
-          CODEX_API_KEY=${_CODEX_API_KEY}
-          CODEX_BASE_URL=${_CODEX_BASE_URL}
-          CODEX_MODEL=${_CODEX_MODEL}
-          CODEX_WIRE_API=${_CODEX_WIRE_API}
-          SECRETS
-          chmod 600 /tmp/codex-secrets.env
-
       - name: Execute Codex review
         id: review
         working-directory: source
@@ -89,13 +72,19 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
           GITHUB_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
+          AI_KEY: ${{ secrets.REVIEW_PROXY_KEY }}
+          AI_URL: ${{ secrets.REVIEW_PROXY_URL }}
+          AI_MODEL: ${{ secrets.REVIEW_MODEL || 'o4-mini' }}
           ARTIFACT_TOKEN: ${{ secrets.LINUX_BUILDS_PAT }}
           ARTIFACT_REPO: ${{ env.ARTIFACT_REPO }}
-          CODEX_SECRETS_FILE: /tmp/codex-secrets.env
           SOURCE_REPO: ${{ env.SOURCE_REPO }}
           PR_NUMBER: ${{ env.PR_NUMBER }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           SCRIPTS_REF: ${{ env.SCRIPTS_REF }}
+          REVIEW_FOCUS: |
+            Review this Unreal Engine private source pull request.
+            Focus only on high-confidence correctness bugs, Linux build safety, Unreal build issues, CI/CD, release artifacts, shell commands, secrets leakage, permissions, and supply-chain risks.
+            Do not suggest broad refactors or style-only changes.
         run: |
           set +x
           set +e
