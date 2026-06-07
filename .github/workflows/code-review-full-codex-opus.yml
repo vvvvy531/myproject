@@ -1,0 +1,502 @@
+name: Full Code Review (Codex Opus)
+
+on:
+  workflow_dispatch:
+    inputs:
+      max_files_per_chunk:
+        description: "Maximum files per folder chunk before splitting"
+        required: false
+        default: "120"
+      source_repo:
+        description: "Source repository"
+        required: false
+        default: "vvvvy531/myproject-source"
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: full-codex-opus-scan
+  cancel-in-progress: false
+
+env:
+  SCRIPTS_REF: main
+  ARTIFACT_REPO: vvvvy531/myproject-linux-builds
+  REPORT_DIR: ${{ github.workspace }}/full-codex-review-report
+  ISSUE_PREFIX: "Codex Automated Review: "
+  SUMMARY_TITLE: "Codex Full Scan Summary"
+
+jobs:
+  full-review:
+    name: Full main semantic review with Codex Opus
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      SOURCE_REPO: ${{ github.event.inputs.source_repo || 'vvvvy531/myproject-source' }}
+      MAX_FILES_PER_CHUNK: ${{ github.event.inputs.max_files_per_chunk || '120' }}
+    steps:
+      - name: Validate
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$SOURCE_REPO" in
+            vvvvy531/myproject-source) ;;
+            *) echo "Invalid source_repo: $SOURCE_REPO" >&2; exit 1 ;;
+          esac
+          case "$MAX_FILES_PER_CHUNK" in ''|*[!0-9]*) echo "Invalid max_files_per_chunk" >&2; exit 1 ;; esac
+          echo "Repository: $SOURCE_REPO"
+          echo "Mode: full main-branch semantic review; one folder at a time; publish issue before marking folder complete"
+
+      - name: Checkout latest private source main with full history
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.SOURCE_REPO }}
+          token: ${{ secrets.PRIVATE_SOURCE_PAT }}
+          ref: main
+          fetch-depth: 0
+          lfs: false
+          submodules: recursive
+          path: source
+          persist-credentials: false
+
+      - name: Prune third-party, wheel, generated folders
+        shell: bash
+        run: |
+          set -euo pipefail
+          find source \
+            \( -type d \( \
+              -name .git -o -name .github -o -name .vs -o -name .vscode -o \
+              -name Binaries -o -name Build -o -name build -o -name DerivedDataCache -o -name Intermediate -o -name Saved -o \
+              -name node_modules -o -name vendor -o -name vendors -o -name third_party -o -name ThirdParty -o -name ThirdPartyNotUE -o \
+              -name External -o -name Externals -o -name Libraries -o -name Library -o -name SDK -o -name SDKs -o \
+              -name Wheels -o -name wheels -o -name wheel -o -name wheelhouse -o -name pip-wheel-metadata -o \
+              -name .venv -o -name venv -o -name env -o -name __pycache__ -o -name site-packages -o -name dist \
+            \) -prune -print \) > /tmp/pruned-dirs.txt
+          while IFS= read -r d; do
+            [[ "$d" == "source/.git" ]] && continue
+            rm -rf "$d"
+          done < /tmp/pruned-dirs.txt
+          echo "Pruned folders: $(wc -l < /tmp/pruned-dirs.txt | tr -d ' ')"
+
+      - name: Prepare Codex runtime
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.LINUX_BUILDS_PAT }}
+          AI_KEY: ${{ secrets.REVIEW_PROXY_KEY }}
+          AI_URL: ${{ secrets.REVIEW_PROXY_URL }}
+          AI_MODEL: ${{ secrets.ISSUE_SOLVER_MODEL || 'opus' }}
+        run: |
+          set -euo pipefail
+          export CI=1 TERM=dumb NO_COLOR=1
+          : "${AI_KEY:?AI_KEY is required}"
+          : "${AI_URL:?AI_URL is required}"
+          _base_url="${AI_URL}"
+          if [[ "$_base_url" != */v1 ]]; then
+            _base_url="${_base_url%/}/v1"
+          fi
+
+          echo "::group::Preflight"
+          preflight_ok=0
+          for pf in 1 2 3 4 5 6 7 8; do
+            echo "Attempt ${pf}/8"
+            http_code=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 45 -H "Authorization: Bearer ${AI_KEY}" "${_base_url}/responses" 2>/dev/null) || http_code="000"
+            echo "HTTP ${http_code}"
+            if [[ "$http_code" =~ ^(200|301|302|401|403|404|405|422)$ ]]; then preflight_ok=1; break; fi
+            [[ $pf -lt 8 ]] && sleep $((15 + pf * 10))
+          done
+          if [[ $preflight_ok -ne 1 ]]; then
+            echo "::error::API proxy did not respond"
+            exit 1
+          fi
+          echo "::endgroup::"
+
+          echo "::group::Install Codex"
+          export NPM_CONFIG_PREFIX="$HOME/.npm-global"
+          export NPM_CONFIG_CACHE="$HOME/.npm-cache"
+          mkdir -p "$NPM_CONFIG_PREFIX/bin" "$NPM_CONFIG_CACHE" "$HOME/.local/bin"
+          echo "$NPM_CONFIG_PREFIX/bin" >> "$GITHUB_PATH"
+          export PATH="$NPM_CONFIG_PREFIX/bin:$HOME/.local/bin:$PATH"
+          if ! command -v codex >/dev/null 2>&1; then
+            npm install -g @openai/codex --no-audit --no-fund --loglevel=error
+          fi
+          sudo apt-get update -qq >/dev/null
+          sudo apt-get install -y -qq ripgrep fd-find jq git >/dev/null
+          ln -sf "$(command -v fdfind)" "$HOME/.local/bin/fd" 2>/dev/null || true
+          codex --version
+          echo "::endgroup::"
+
+          echo "::group::Configure Codex"
+          export CODEX_HOME="${RUNNER_TEMP}/codex-home"
+          rm -rf "$CODEX_HOME"
+          mkdir -p "$CODEX_HOME"
+          gh api -H 'Accept: application/vnd.github.raw' \
+            "repos/${ARTIFACT_REPO}/contents/ci-scripts/AGENTS.md?ref=${SCRIPTS_REF}" \
+            > source/AGENTS.md 2>/dev/null || true
+          cat > "$CODEX_HOME/auth.json" <<AUTH
+          {"auth_mode":"apikey","OPENAI_API_KEY":"${AI_KEY}"}
+          AUTH
+          cat > "$CODEX_HOME/config.toml" <<CONFIG
+          model = "${AI_MODEL}"
+          model_provider = "9router"
+          approval_policy = "never"
+          sandbox_mode = "danger-full-access"
+          [model_providers.9router]
+          name = "9Router"
+          base_url = "${_base_url}"
+          wire_api = "responses"
+          [agents.subagent]
+          model = "${AI_MODEL}"
+          [shell_environment_policy]
+          inherit = "all"
+          CONFIG
+          echo "CODEX_HOME=$CODEX_HOME" >> "$GITHUB_ENV"
+          echo "AI_MODEL=$AI_MODEL" >> "$GITHUB_ENV"
+          echo "Model: $AI_MODEL"
+          echo "::endgroup::"
+
+      - name: Determine all first-party review folders
+        id: range
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$REPORT_DIR"
+          base_sha="$(git -C source rev-list --max-parents=0 HEAD | tail -n 1)"
+          head_sha="$(git -C source rev-parse HEAD)"
+          commit_count="$(git -C source rev-list --count HEAD)"
+          python3 - <<'PY' > "$REPORT_DIR/all-chunks.txt"
+          import os, re
+          from pathlib import Path
+          root = Path('source')
+          max_files_per_chunk = int(os.environ.get('MAX_FILES_PER_CHUNK', '120'))
+          review_suffixes = {'.h', '.hpp', '.hh', '.c', '.cc', '.cpp', '.cxx', '.cs', '.uproject', '.uplugin', '.ini', '.json', '.yml', '.yaml', '.sh', '.bash', '.ps1', '.bat', '.cmd', '.py', '.cmake', '.target'}
+          excluded_names = {
+              '.git', '.github', '.vs', '.vscode',
+              'Binaries', 'Build', 'build', 'DerivedDataCache', 'Intermediate', 'Saved',
+              'node_modules', 'vendor', 'vendors', 'third_party', 'ThirdParty', 'ThirdPartyNotUE',
+              'External', 'Externals', 'Libraries', 'Library', 'SDK', 'SDKs',
+              'Wheels', 'wheels', 'wheel', 'wheelhouse', 'pip-wheel-metadata',
+              '.venv', 'venv', 'env', '__pycache__', 'site-packages', 'dist',
+          }
+          excluded_lower = {x.lower() for x in excluded_names}
+          license_files = {'LICENSE', 'LICENSE.md', 'LICENSE.txt', 'LICENCE', 'LICENCE.md', 'COPYING', 'COPYING.md', 'NOTICE', 'NOTICE.md'}
+          known_third_party_plugins = {'FlatBuffers', 'FastNoise2', 'WFC++', 'Flow', 'voronoi-0.9.0', 'usearch_windows_x64_2.22.0'}
+          def has_excluded_part(p: Path) -> bool:
+              return any(part in excluded_names or part.lower() in excluded_lower for part in p.parts)
+          def is_wheel_dir(d: Path) -> bool:
+              try:
+                  if d.name.lower() in {'wheels', 'wheel', 'wheelhouse', 'pip-wheel-metadata', 'site-packages'}:
+                      return True
+                  return any(f.is_file() and f.suffix == '.whl' for f in d.iterdir())
+              except OSError:
+                  return True
+          def is_third_party_plugin(plugin_dir: Path) -> bool:
+              try:
+                  if is_wheel_dir(plugin_dir): return True
+                  names = {f.name for f in plugin_dir.iterdir() if f.is_file()}
+                  dirs = {f.name for f in plugin_dir.iterdir() if f.is_dir()}
+              except OSError:
+                  return True
+              if names & license_files: return True
+              if 'include' in {d.lower() for d in dirs} and 'lib' in {d.lower() for d in dirs}: return True
+              if 'CMakeLists.txt' in names: return True
+              if re.search(r'[-_]\d+\.\d+', plugin_dir.name): return True
+              if 'README.md' in names and any(n.endswith('.uplugin') for n in names): return True
+              if plugin_dir.name in known_third_party_plugins: return True
+              return False
+          def count_code_files(p: Path) -> int:
+              return sum(1 for f in p.rglob('*') if f.is_file() and f.suffix in review_suffixes and not has_excluded_part(f) and not under_excluded_plugin(f))
+          excluded_plugin_names = set()
+          for d in sorted(root.rglob('Plugins')):
+              if d.is_dir() and not has_excluded_part(d):
+                  for ps in sorted(d.iterdir()):
+                      if ps.is_dir() and is_third_party_plugin(ps):
+                          excluded_plugin_names.add(ps.name)
+          def under_excluded_plugin(path: Path) -> bool:
+              parts = list(path.parts)
+              for j, part in enumerate(parts):
+                  if part == 'Plugins' and j + 1 < len(parts):
+                      return parts[j+1] in excluded_plugin_names
+              return False
+          def first_party_review_root(d: Path) -> bool:
+              if not d.is_dir() or has_excluded_part(d) or under_excluded_plugin(d) or is_wheel_dir(d):
+                  return False
+              if d == root:
+                  return False
+              rel_parts = d.relative_to(root).parts
+              if not rel_parts:
+                  return False
+              # Keep first-party semantic/code config areas. Exclude asset-only Content by suffix count.
+              if d.name in {'Source', 'Config', 'Scripts', 'Script', 'CI', 'BuildScripts'}:
+                  return count_code_files(d) > 0
+              if len(rel_parts) == 1 and d.name not in {'Plugins', 'Content'}:
+                  return count_code_files(d) > 0
+              if 'Plugins' in rel_parts and d.name in {'Source', 'Config', 'Scripts', 'Script'}:
+                  return count_code_files(d) > 0
+              return False
+          candidates = sorted(d for d in root.rglob('*') if first_party_review_root(d))
+          # Avoid nested duplicate coverage unless parent is oversized and needs splitting.
+          selected_roots = []
+          for d in candidates:
+              n = count_code_files(d)
+              parent_selected = next((p for p in selected_roots if p in d.parents), None)
+              if parent_selected is not None and count_code_files(parent_selected) <= max_files_per_chunk:
+                  continue
+              selected_roots.append(d)
+          chunks = []
+          for sd in selected_roots:
+              n = count_code_files(sd)
+              if n == 0:
+                  continue
+              rel = str(sd.relative_to(root))
+              if n <= max_files_per_chunk:
+                  chunks.append(rel)
+                  continue
+              subdirs = sorted(s for s in sd.iterdir() if s.is_dir() and not has_excluded_part(s) and not is_wheel_dir(s) and not under_excluded_plugin(s))
+              split = False
+              for sub in subdirs:
+                  if count_code_files(sub) > 0:
+                      chunks.append(str(sub.relative_to(root)))
+                      split = True
+              if not split:
+                  chunks.append(rel)
+          top_files = [str(f.relative_to(root)) for f in root.iterdir() if f.is_file() and f.suffix in review_suffixes]
+          if top_files:
+              chunks.append('(root-files)')
+          seen_chunks = set()
+          for c in chunks:
+              if c not in seen_chunks:
+                  seen_chunks.add(c)
+                  print(c)
+          PY
+          total="$(wc -l < "$REPORT_DIR/all-chunks.txt" | tr -d ' ')"
+          if (( total == 0 )); then
+            echo "::error::No first-party review folders found"
+            exit 1
+          fi
+          echo "Full history commits: ${commit_count}"
+          echo "Review folders: ${total}"
+          echo "base_sha=${base_sha}" >> "$GITHUB_OUTPUT"
+          echo "head_sha=${head_sha}" >> "$GITHUB_OUTPUT"
+          echo "commit_count=${commit_count}" >> "$GITHUB_OUTPUT"
+          echo "total_chunks=${total}" >> "$GITHUB_OUTPUT"
+          echo "selected_count=${total}" >> "$GITHUB_OUTPUT"
+
+      - name: Run Codex review one folder at a time and publish issues
+        id: review
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
+        run: |
+          set +x
+          set +e
+          failed=0
+          reviewed=0
+          issue_count=0
+          finding_chunks=0
+          mkdir -p "$REPORT_DIR/issue-bodies" "$REPORT_DIR/prompts"
+          cat > "$REPORT_DIR/finding-schema.json" <<'JSON'
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "findings": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "severity": {"type": "string", "enum": ["critical", "high", "medium", "low"]},
+                    "title": {"type": "string"},
+                    "file": {"type": "string"},
+                    "line": {"type": "integer"},
+                    "evidence": {"type": "string"},
+                    "impact": {"type": "string"},
+                    "fix": {"type": "string"}
+                  },
+                  "required": ["severity", "title", "file", "line", "evidence", "impact", "fix"]
+                }
+              }
+            },
+            "required": ["findings"]
+          }
+          JSON
+
+          while IFS= read -r dir; do
+            [[ -n "$dir" ]] || continue
+            reviewed=$((reviewed + 1))
+            echo "::group::Reviewing ${dir} (${reviewed}/${{ steps.range.outputs.total_chunks }})"
+            safe="$(printf '%s' "$dir" | tr '/.' '___')"
+            prompt="$REPORT_DIR/prompts/${safe}.md"
+            body_file="$REPORT_DIR/issue-bodies/${safe}.md"
+            rm -f "$body_file" "/tmp/codex-final-${safe}.json" "/tmp/codex-output-${safe}.log" "/tmp/codex-stderr-${safe}.log"
+            {
+              echo "You are performing a full semantic code review of the latest main branch of a private Unreal Engine repository."
+              echo "The checkout is full-history (fetch-depth 0). Use repository-wide context and git history when needed, but report only findings in this folder scope."
+              echo "Do not modify files. Only inspect and report."
+              echo "Target folder/chunk: ${dir}"
+              echo "Head SHA: ${{ steps.range.outputs.head_sha }}"
+              echo "Root: current working directory."
+              echo
+              if [[ "$dir" == "(root-files)" ]]; then
+                echo "Scope: only top-level source/code project files in repository root."
+              else
+                echo "Scope: only first-party files under: ${dir}"
+              fi
+              echo
+              echo "Excluded from review: third-party libraries, wheels/wheelhouse/site-packages, vendored SDKs, generated folders, build artifacts."
+              echo "Focus only on high-confidence correctness bugs, Linux build safety, Unreal Build Tool/module issues, CI/CD/release artifacts, shell commands, secrets leakage, permissions, and supply-chain risks."
+              echo "Ignore style-only concerns, speculative refactors, low-confidence guesses, and broad rewrites."
+              echo "Return JSON only matching the schema. If no high-confidence findings, return {\"findings\":[]}."
+            } > "$prompt"
+
+            codex exec \
+              --skip-git-repo-check \
+              --ephemeral \
+              --color never \
+              --output-schema "$REPORT_DIR/finding-schema.json" \
+              -o "/tmp/codex-final-${safe}.json" \
+              -C source \
+              -m "$AI_MODEL" \
+              -c 'approval_policy="never"' \
+              -c 'sandbox_mode="danger-full-access"' \
+              < "$prompt" \
+              > "/tmp/codex-output-${safe}.log" \
+              2> "/tmp/codex-stderr-${safe}.log"
+            rc=$?
+
+            git -C source reset --hard HEAD >/dev/null 2>&1 || true
+            git -C source clean -fd -e AGENTS.md >/dev/null 2>&1 || true
+
+            if [[ $rc -ne 0 ]]; then
+              echo "Codex review failed for ${dir} (exit ${rc})"
+              tail -n 80 "/tmp/codex-stderr-${safe}.log" 2>/dev/null || true
+              failed=$((failed + 1))
+              printf '%s\tfailure:%s\n' "$dir" "$rc" >> "$REPORT_DIR/chunk-status.tsv"
+              echo "::endgroup::"
+              continue
+            fi
+
+            python3 - "$dir" "/tmp/codex-final-${safe}.json" "$body_file" <<'PY'
+          import json, sys, re
+          from pathlib import Path
+          chunk, in_file, out_file = sys.argv[1], Path(sys.argv[2]), Path(sys.argv[3])
+          raw = in_file.read_text(encoding='utf-8', errors='replace') if in_file.exists() else ''
+          try:
+              data = json.loads(raw)
+          except Exception:
+              m = re.search(r'\{.*\}', raw, re.S)
+              try:
+                  data = json.loads(m.group(0)) if m else {'findings': []}
+              except Exception:
+                  data = {'findings': []}
+          findings = data.get('findings') or []
+          if not findings:
+              sys.exit(0)
+          with out_file.open('w', encoding='utf-8') as f:
+              f.write(f'# Codex Automated Review: {chunk}\n\n')
+              f.write(f'Found {len(findings)} high-confidence finding(s).\n\n')
+              for i, item in enumerate(findings, 1):
+                  sev = str(item.get('severity', 'unknown')).strip()
+                  title = str(item.get('title', 'Untitled finding')).strip()
+                  file = str(item.get('file', 'unknown')).strip()
+                  line = item.get('line', 0)
+                  evidence = str(item.get('evidence', '')).strip()
+                  impact = str(item.get('impact', '')).strip()
+                  fix = str(item.get('fix', '')).strip()
+                  f.write(f'## {i}. [{sev}] {title}\n\n')
+                  f.write(f'- File: `{file}`\n')
+                  f.write(f'- Line: {line}\n\n')
+                  if evidence:
+                      f.write(f'**Evidence:** {evidence}\n\n')
+                  if impact:
+                      f.write(f'**Impact:** {impact}\n\n')
+                  if fix:
+                      f.write(f'**Suggested fix:** {fix}\n\n')
+          PY
+
+            if [[ ! -s "$body_file" ]]; then
+              printf '%s\tsuccess-no-findings\n' "$dir" >> "$REPORT_DIR/chunk-status.tsv"
+              echo "No findings; no issue published. Folder complete."
+              echo "::endgroup::"
+              continue
+            fi
+
+            title="${ISSUE_PREFIX}${dir}"
+            issue="$(TITLE="$title" gh issue list -R "$SOURCE_REPO" --state all --search "$title in:title" --json number,title --jq '.[] | select(.title == env.TITLE) | .number' | head -n 1)"
+            if [[ -z "$issue" ]]; then
+              gh issue create -R "$SOURCE_REPO" --title "$title" --body-file "$body_file" >/dev/null
+              upsert_rc=$?
+            else
+              gh issue edit "$issue" -R "$SOURCE_REPO" --body-file "$body_file"
+              upsert_rc=$?
+              if [[ $upsert_rc -eq 0 ]]; then
+                gh issue reopen "$issue" -R "$SOURCE_REPO" || true
+              fi
+            fi
+            if [[ $upsert_rc -ne 0 ]]; then
+              echo "Issue publish failed for ${dir}"
+              failed=$((failed + 1))
+              printf '%s\tfailure:issue-publish\n' "$dir" >> "$REPORT_DIR/chunk-status.tsv"
+              echo "::endgroup::"
+              continue
+            fi
+
+            issue_count=$((issue_count + 1))
+            finding_chunks=$((finding_chunks + 1))
+            printf '%s\tsuccess-findings-issue-published\n' "$dir" >> "$REPORT_DIR/chunk-status.tsv"
+            echo "Findings published. Folder complete."
+            echo "::endgroup::"
+          done < "$REPORT_DIR/all-chunks.txt"
+
+          echo "failed=${failed}" >> "$GITHUB_OUTPUT"
+          echo "reviewed=${reviewed}" >> "$GITHUB_OUTPUT"
+          echo "issue_count=${issue_count}" >> "$GITHUB_OUTPUT"
+          echo "finding_chunks=${finding_chunks}" >> "$GITHUB_OUTPUT"
+          set -e
+          if [[ $failed -ne 0 ]]; then
+            echo "::error::${failed} folder(s) failed review or issue publish"
+            exit 1
+          fi
+
+      - name: Update Codex full scan summary issue
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REVIEW_FAILED: ${{ steps.review.outputs.failed || 'unknown' }}
+          REVIEWED: ${{ steps.review.outputs.reviewed || '0' }}
+          ISSUE_COUNT: ${{ steps.review.outputs.issue_count || '0' }}
+          FINDING_CHUNKS: ${{ steps.review.outputs.finding_chunks || '0' }}
+        run: |
+          set -euo pipefail
+          body_file="$REPORT_DIR/codex-full-scan-summary.md"
+          mkdir -p "$REPORT_DIR"
+          {
+            echo "# ${SUMMARY_TITLE}"
+            echo
+            echo "Full main-branch semantic scan. One folder is considered complete only after findings are published as an issue; folders with no findings publish nothing."
+            echo
+            echo "```json"
+            echo "{\"total_chunks\":\"${{ steps.range.outputs.total_chunks }}\",\"reviewed\":\"${REVIEWED}\",\"finding_chunks\":\"${FINDING_CHUNKS}\",\"issues_published\":\"${ISSUE_COUNT}\",\"failed\":\"${REVIEW_FAILED}\",\"head_sha\":\"${{ steps.range.outputs.head_sha }}\",\"base_sha\":\"${{ steps.range.outputs.base_sha }}\",\"commit_count\":\"${{ steps.range.outputs.commit_count }}\",\"model\":\"${AI_MODEL:-unknown}\",\"run_id\":\"${GITHUB_RUN_ID}\",\"updated_at\":\"$(date -u +%FT%TZ)\"}"
+            echo "```"
+          } > "$body_file"
+          issue="$(gh issue list -R "$GITHUB_REPOSITORY" --state all --search "$SUMMARY_TITLE in:title" --json number,title --jq '.[] | select(.title == env.SUMMARY_TITLE) | .number' | head -n 1)"
+          if [[ -z "$issue" ]]; then
+            gh issue create -R "$GITHUB_REPOSITORY" --title "$SUMMARY_TITLE" --body-file "$body_file" >/dev/null
+          else
+            gh issue edit "$issue" -R "$GITHUB_REPOSITORY" --body-file "$body_file"
+            gh issue reopen "$issue" -R "$GITHUB_REPOSITORY" || true
+          fi
+
+      - name: Cleanup
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.LINUX_BUILDS_PAT }}
+        run: |
+          gh api -H 'Accept: application/vnd.github.raw' \
+            "repos/${ARTIFACT_REPO}/contents/ci-scripts/cleanup-review.sh?ref=${SCRIPTS_REF}" \
+            > /tmp/_cleanup.sh
+          bash /tmp/_cleanup.sh
+          rm -f /tmp/_cleanup.sh
