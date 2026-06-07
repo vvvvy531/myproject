@@ -2,7 +2,7 @@ name: Issue Solver
 
 on:
   repository_dispatch:
-    types: [codex-solve-issues]
+    types: [solve-issues]
   workflow_dispatch:
     inputs:
       max_issues:
@@ -20,7 +20,7 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: codex-solve-issues-single
+  group: issue-solver-single
   cancel-in-progress: true
 
 env:
@@ -29,7 +29,7 @@ env:
 
 jobs:
   solve:
-    name: Execute Issue Solver
+    name: Run Issue Solver
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
@@ -44,7 +44,7 @@ jobs:
             vvvvy531/myproject-source) ;;
             *) echo "Invalid source_repo: $SOURCE_REPO" >&2; exit 1 ;;
           esac
-          echo "Solving issues for: $SOURCE_REPO (max $MAX_ISSUES)"
+          echo "Repairing issues for: $SOURCE_REPO (max $MAX_ISSUES)"
 
       - name: Checkout source
         uses: actions/checkout@v4
@@ -57,7 +57,7 @@ jobs:
           path: source
           persist-credentials: false
 
-      - name: Execute Issue Solver
+      - name: Run Issue Solver
         id: solve
         working-directory: source
         shell: bash
@@ -77,11 +77,11 @@ jobs:
           set +x
           set +e
           gh api -H 'Accept: application/vnd.github.raw' \
-            "repos/${ARTIFACT_REPO}/contents/ci-scripts/run-codex-solve.sh?ref=${SCRIPTS_REF}" \
-            > /tmp/_run_codex_solve.sh
-          bash /tmp/_run_codex_solve.sh
+            "repos/${ARTIFACT_REPO}/contents/ci-scripts/run-issue-solver.sh?ref=${SCRIPTS_REF}" \
+            > /tmp/_run_issue_solver.sh
+          bash /tmp/_run_issue_solver.sh
           status=$?
-          rm -f /tmp/_run_codex_solve.sh
+          rm -f /tmp/_run_issue_solver.sh
           echo "status=$status" >> "$GITHUB_OUTPUT"
           exit "$status"
 
