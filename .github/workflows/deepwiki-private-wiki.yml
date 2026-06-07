@@ -249,8 +249,8 @@ jobs:
           if git -C "$work" diff --cached --quiet; then
             echo "No wiki changes to commit."
           else
-            git -C "$work" commit -m "Update DeepWiki private wiki"
-            git -C "$work" push origin "HEAD:$BRANCH" --force-with-lease
+            git -C "$work" commit -m "Update DeepWiki private wiki" >/dev/null
+            git -C "$work" push origin "HEAD:$BRANCH" --force-with-lease >/dev/null
           fi
           if gh pr view "$BRANCH" --repo "$PRIVATE_SOURCE_REPO" >/dev/null 2>&1; then
             echo "Private source PR already exists for $BRANCH."

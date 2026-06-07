@@ -70,9 +70,6 @@ def send_websocket_request(ws_url: str, payload: dict) -> str:
 def parse_wiki_structure_xml(text: str) -> dict:
     match = re.search(r"<wiki_structure>[\s\S]*?</wiki_structure>", text)
     if not match:
-        preview = text[:4000].replace(os.environ.get("OPENAI_API_KEY", ""), "***")
-        print("No <wiki_structure> block found in response. Response preview:", file=sys.stderr)
-        print(preview, file=sys.stderr)
         raise SystemExit("No <wiki_structure> block found in response")
     xml_text = match.group(0)
     xml_text = re.sub(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]", "", xml_text)
@@ -241,8 +238,9 @@ def main() -> int:
     print(f"[deepwiki] generated {len(structure.get('pages', []))} pages")
 
     page_contents: dict[str, str] = {}
-    for page in structure.get("pages", []):
-        print(f"[deepwiki] generating page: {page['title']}")
+    pages_list = structure.get("pages", [])
+    for idx, page in enumerate(pages_list, start=1):
+        print(f"[deepwiki] generating page {idx}/{len(pages_list)}")
         content = generate_page_content(
             ws_url,
             repo_url,
