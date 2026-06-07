@@ -8,7 +8,7 @@ on:
       max_issues:
         description: "Maximum issues to process per run"
         required: false
-        default: "5"
+        default: "100"
       source_repo:
         description: "Source repository"
         required: false
@@ -34,7 +34,7 @@ jobs:
     timeout-minutes: 120
     env:
       SOURCE_REPO: ${{ github.event.client_payload.source_repo || github.event.inputs.source_repo || 'vvvvy531/myproject-source' }}
-      MAX_ISSUES: ${{ github.event.client_payload.max_issues || github.event.inputs.max_issues || '5' }}
+      MAX_ISSUES: ${{ github.event.client_payload.max_issues || github.event.inputs.max_issues || '100' }}
     steps:
       - name: Validate trigger
         shell: bash
