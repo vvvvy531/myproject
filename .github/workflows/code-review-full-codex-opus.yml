@@ -414,21 +414,44 @@ jobs:
           from pathlib import Path
           chunk, in_file, out_file, meta_file = sys.argv[1], Path(sys.argv[2]), Path(sys.argv[3]), Path(sys.argv[4])
           raw = in_file.read_text(encoding='utf-8', errors='replace') if in_file.exists() else ''
-          if not raw.strip():
+          s = raw.strip()
+          if not s:
               Path(meta_file).write_text('parse_status=empty\nfindings_count=0\n', encoding='utf-8')
               sys.exit(2)
-          try:
-              data = json.loads(raw)
-          except Exception:
-              m = re.search(r'\{.*\}', raw, re.S)
-              if not m:
-                  Path(meta_file).write_text('parse_status=invalid_json\nfindings_count=0\n', encoding='utf-8')
-                  sys.exit(2)
+          lowered = s.lower()
+          no_finding_markers = [
+              'no findings', 'no high-confidence findings', 'no high confidence findings',
+              'no issues found', 'no issues were found', 'nothing to report',
+          ]
+          if any(marker in lowered for marker in no_finding_markers) and len(s) <= 500:
+              Path(meta_file).write_text('parse_status=ok_text_no_findings\nfindings_count=0\n', encoding='utf-8')
+              sys.exit(0)
+          data = None
+          candidates = [s]
+          fence = re.search(r'```(?:json)?\s*(.*?)\s*```', s, re.S | re.I)
+          if fence:
+              candidates.append(fence.group(1).strip())
+          decoder = json.JSONDecoder()
+          for candidate in candidates:
               try:
-                  data = json.loads(m.group(0))
+                  data = json.loads(candidate)
+                  break
               except Exception:
-                  Path(meta_file).write_text('parse_status=invalid_json\nfindings_count=0\n', encoding='utf-8')
-                  sys.exit(2)
+                  pass
+              for idx, ch in enumerate(candidate):
+                  if ch != '{':
+                      continue
+                  try:
+                      obj, _ = decoder.raw_decode(candidate[idx:])
+                      data = obj
+                      break
+                  except Exception:
+                      continue
+              if data is not None:
+                  break
+          if data is None:
+              Path(meta_file).write_text('parse_status=invalid_json\nfindings_count=0\n', encoding='utf-8')
+              sys.exit(2)
           if not isinstance(data, dict) or 'findings' not in data or not isinstance(data.get('findings'), list):
               Path(meta_file).write_text('parse_status=missing_findings\nfindings_count=0\n', encoding='utf-8')
               sys.exit(2)
@@ -475,7 +498,7 @@ jobs:
 
             if [[ ! -s "$body_file" ]]; then
               printf '%s\tsuccess-no-findings\n' "$dir" >> "$REPORT_DIR/chunk-status.tsv"
-              echo "Folder result: no_findings; findings_count=${findings_count}; issue_published=false; duration=${duration}s; stdout_bytes=${stdout_bytes}; stderr_bytes=${stderr_bytes}; final_bytes=${final_bytes}"
+              echo "Folder result: no_findings; parse_status=${parse_status}; findings_count=${findings_count}; issue_published=false; duration=${duration}s; stdout_bytes=${stdout_bytes}; stderr_bytes=${stderr_bytes}; final_bytes=${final_bytes}"
               echo "::endgroup::"
               continue
             fi
@@ -505,7 +528,7 @@ jobs:
             issue_count=$((issue_count + 1))
             finding_chunks=$((finding_chunks + 1))
             printf '%s\tsuccess-findings-issue-published\n' "$dir" >> "$REPORT_DIR/chunk-status.tsv"
-            echo "Folder result: findings; findings_count=${findings_count}; issue_published=true; issue_action=${issue_action}; duration=${duration}s"
+            echo "Folder result: findings; parse_status=${parse_status}; findings_count=${findings_count}; issue_published=true; issue_action=${issue_action}; duration=${duration}s"
             echo "::endgroup::"
           done < "$REPORT_DIR/review-chunks.txt"
 
@@ -560,4 +583,5 @@ jobs:
             > /tmp/_cleanup.sh
           bash /tmp/_cleanup.sh
           rm -f /tmp/_cleanup.sh
+
 
