@@ -11,6 +11,10 @@ on:
         description: "Source repository"
         required: false
         default: "vvvvy531/myproject-source"
+      review_folder:
+        description: "Optional single folder/chunk to review for testing, e.g. Config"
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -35,6 +39,7 @@ jobs:
     env:
       SOURCE_REPO: ${{ github.event.inputs.source_repo || 'vvvvy531/myproject-source' }}
       MAX_FILES_PER_CHUNK: ${{ github.event.inputs.max_files_per_chunk || '120' }}
+      REVIEW_FOLDER: ${{ github.event.inputs.review_folder || '' }}
     steps:
       - name: Validate
         shell: bash
@@ -47,6 +52,9 @@ jobs:
           case "$MAX_FILES_PER_CHUNK" in ''|*[!0-9]*) echo "Invalid max_files_per_chunk" >&2; exit 1 ;; esac
           echo "Repository: $SOURCE_REPO"
           echo "Mode: full main-branch semantic review; one folder at a time; publish issue before marking folder complete"
+          if [[ -n "$REVIEW_FOLDER" ]]; then
+            echo "Test mode: single folder '$REVIEW_FOLDER'"
+          fi
 
       - name: Checkout latest private source main with full history
         uses: actions/checkout@v4
@@ -269,13 +277,28 @@ jobs:
                   seen_chunks.add(c)
                   print(c)
           PY
-          total="$(wc -l < "$REPORT_DIR/all-chunks.txt" | tr -d ' ')"
+          if [[ -n "${REVIEW_FOLDER:-}" ]]; then
+            if [[ "$REVIEW_FOLDER" == *..* || "$REVIEW_FOLDER" == /* || "$REVIEW_FOLDER" == source/* ]]; then
+              echo "::error::Invalid review_folder: $REVIEW_FOLDER"
+              exit 1
+            fi
+            if ! grep -Fx -- "$REVIEW_FOLDER" "$REPORT_DIR/all-chunks.txt" >/dev/null; then
+              echo "::error::review_folder not found in first-party chunks: $REVIEW_FOLDER"
+              echo "Available chunks:"
+              sed 's/^/- /' "$REPORT_DIR/all-chunks.txt"
+              exit 1
+            fi
+            printf '%s\n' "$REVIEW_FOLDER" > "$REPORT_DIR/review-chunks.txt"
+          else
+            cp "$REPORT_DIR/all-chunks.txt" "$REPORT_DIR/review-chunks.txt"
+          fi
+          total="$(wc -l < "$REPORT_DIR/review-chunks.txt" | tr -d ' ')"
           if (( total == 0 )); then
             echo "::error::No first-party review folders found"
             exit 1
           fi
           echo "Full history commits: ${commit_count}"
-          echo "Review folders: ${total}"
+          echo "Review folders this run: ${total}"
           echo "base_sha=${base_sha}" >> "$GITHUB_OUTPUT"
           echo "head_sha=${head_sha}" >> "$GITHUB_OUTPUT"
           echo "commit_count=${commit_count}" >> "$GITHUB_OUTPUT"
@@ -325,11 +348,16 @@ jobs:
           while IFS= read -r dir; do
             [[ -n "$dir" ]] || continue
             reviewed=$((reviewed + 1))
+            folder_started_at=$(date +%s)
             echo "::group::Reviewing ${dir} (${reviewed}/${{ steps.range.outputs.total_chunks }})"
             safe="$(printf '%s' "$dir" | tr '/.' '___')"
             prompt="$REPORT_DIR/prompts/${safe}.md"
             body_file="$REPORT_DIR/issue-bodies/${safe}.md"
-            rm -f "$body_file" "/tmp/codex-final-${safe}.json" "/tmp/codex-output-${safe}.log" "/tmp/codex-stderr-${safe}.log"
+            meta_file="$REPORT_DIR/issue-bodies/${safe}.meta"
+            final_file="/tmp/codex-final-${safe}.json"
+            stdout_file="/tmp/codex-output-${safe}.log"
+            stderr_file="/tmp/codex-stderr-${safe}.log"
+            rm -f "$body_file" "$meta_file" "$final_file" "$stdout_file" "$stderr_file"
             {
               echo "You are performing a full semantic code review of the latest main branch of a private Unreal Engine repository."
               echo "The checkout is full-history (fetch-depth 0). Use repository-wide context and git history when needed, but report only findings in this folder scope."
@@ -355,42 +383,57 @@ jobs:
               --ephemeral \
               --color never \
               --output-schema "$REPORT_DIR/finding-schema.json" \
-              -o "/tmp/codex-final-${safe}.json" \
+              -o "$final_file" \
               -C source \
               -m "$AI_MODEL" \
               -c 'approval_policy="never"' \
               -c 'sandbox_mode="danger-full-access"' \
               < "$prompt" \
-              > "/tmp/codex-output-${safe}.log" \
-              2> "/tmp/codex-stderr-${safe}.log"
+              > "$stdout_file" \
+              2> "$stderr_file"
             rc=$?
 
             git -C source reset --hard HEAD >/dev/null 2>&1 || true
             git -C source clean -fd -e AGENTS.md >/dev/null 2>&1 || true
 
+            duration=$(( $(date +%s) - folder_started_at ))
+            stdout_bytes=$(wc -c < "$stdout_file" 2>/dev/null | tr -d ' ' || echo 0)
+            stderr_bytes=$(wc -c < "$stderr_file" 2>/dev/null | tr -d ' ' || echo 0)
+            final_bytes=$(wc -c < "$final_file" 2>/dev/null | tr -d ' ' || echo 0)
+
             if [[ $rc -ne 0 ]]; then
-              echo "Codex review failed for ${dir} (exit ${rc})"
-              tail -n 80 "/tmp/codex-stderr-${safe}.log" 2>/dev/null || true
+              echo "Folder result: codex_failed; exit=${rc}; duration=${duration}s; stdout_bytes=${stdout_bytes}; stderr_bytes=${stderr_bytes}; final_bytes=${final_bytes}"
               failed=$((failed + 1))
-              printf '%s\tfailure:%s\n' "$dir" "$rc" >> "$REPORT_DIR/chunk-status.tsv"
+              printf '%s\tfailure:codex:%s\n' "$dir" "$rc" >> "$REPORT_DIR/chunk-status.tsv"
               echo "::endgroup::"
               continue
             fi
 
-            python3 - "$dir" "/tmp/codex-final-${safe}.json" "$body_file" <<'PY'
+            python3 - "$dir" "$final_file" "$body_file" "$meta_file" <<'PY'
           import json, sys, re
           from pathlib import Path
-          chunk, in_file, out_file = sys.argv[1], Path(sys.argv[2]), Path(sys.argv[3])
+          chunk, in_file, out_file, meta_file = sys.argv[1], Path(sys.argv[2]), Path(sys.argv[3]), Path(sys.argv[4])
           raw = in_file.read_text(encoding='utf-8', errors='replace') if in_file.exists() else ''
+          if not raw.strip():
+              Path(meta_file).write_text('parse_status=empty\nfindings_count=0\n', encoding='utf-8')
+              sys.exit(2)
           try:
               data = json.loads(raw)
           except Exception:
               m = re.search(r'\{.*\}', raw, re.S)
+              if not m:
+                  Path(meta_file).write_text('parse_status=invalid_json\nfindings_count=0\n', encoding='utf-8')
+                  sys.exit(2)
               try:
-                  data = json.loads(m.group(0)) if m else {'findings': []}
+                  data = json.loads(m.group(0))
               except Exception:
-                  data = {'findings': []}
-          findings = data.get('findings') or []
+                  Path(meta_file).write_text('parse_status=invalid_json\nfindings_count=0\n', encoding='utf-8')
+                  sys.exit(2)
+          if not isinstance(data, dict) or 'findings' not in data or not isinstance(data.get('findings'), list):
+              Path(meta_file).write_text('parse_status=missing_findings\nfindings_count=0\n', encoding='utf-8')
+              sys.exit(2)
+          findings = data.get('findings')
+          Path(meta_file).write_text(f'parse_status=ok\nfindings_count={len(findings)}\n', encoding='utf-8')
           if not findings:
               sys.exit(0)
           with out_file.open('w', encoding='utf-8') as f:
@@ -414,10 +457,25 @@ jobs:
                   if fix:
                       f.write(f'**Suggested fix:** {fix}\n\n')
           PY
+            parse_rc=$?
+            parse_status="unknown"
+            findings_count="0"
+            if [[ -s "$meta_file" ]]; then
+              parse_status="$(grep '^parse_status=' "$meta_file" | cut -d= -f2- || echo unknown)"
+              findings_count="$(grep '^findings_count=' "$meta_file" | cut -d= -f2- || echo 0)"
+            fi
+
+            if [[ $parse_rc -ne 0 ]]; then
+              echo "Folder result: parse_failed; parse_status=${parse_status}; duration=${duration}s; stdout_bytes=${stdout_bytes}; stderr_bytes=${stderr_bytes}; final_bytes=${final_bytes}"
+              failed=$((failed + 1))
+              printf '%s\tfailure:parse:%s\n' "$dir" "$parse_status" >> "$REPORT_DIR/chunk-status.tsv"
+              echo "::endgroup::"
+              continue
+            fi
 
             if [[ ! -s "$body_file" ]]; then
               printf '%s\tsuccess-no-findings\n' "$dir" >> "$REPORT_DIR/chunk-status.tsv"
-              echo "No findings; no issue published. Folder complete."
+              echo "Folder result: no_findings; findings_count=${findings_count}; issue_published=false; duration=${duration}s; stdout_bytes=${stdout_bytes}; stderr_bytes=${stderr_bytes}; final_bytes=${final_bytes}"
               echo "::endgroup::"
               continue
             fi
@@ -427,15 +485,17 @@ jobs:
             if [[ -z "$issue" ]]; then
               gh issue create -R "$SOURCE_REPO" --title "$title" --body-file "$body_file" >/dev/null
               upsert_rc=$?
+              issue_action="created"
             else
               gh issue edit "$issue" -R "$SOURCE_REPO" --body-file "$body_file"
               upsert_rc=$?
+              issue_action="updated"
               if [[ $upsert_rc -eq 0 ]]; then
                 gh issue reopen "$issue" -R "$SOURCE_REPO" || true
               fi
             fi
             if [[ $upsert_rc -ne 0 ]]; then
-              echo "Issue publish failed for ${dir}"
+              echo "Folder result: issue_publish_failed; findings_count=${findings_count}; duration=${duration}s"
               failed=$((failed + 1))
               printf '%s\tfailure:issue-publish\n' "$dir" >> "$REPORT_DIR/chunk-status.tsv"
               echo "::endgroup::"
@@ -445,9 +505,9 @@ jobs:
             issue_count=$((issue_count + 1))
             finding_chunks=$((finding_chunks + 1))
             printf '%s\tsuccess-findings-issue-published\n' "$dir" >> "$REPORT_DIR/chunk-status.tsv"
-            echo "Findings published. Folder complete."
+            echo "Folder result: findings; findings_count=${findings_count}; issue_published=true; issue_action=${issue_action}; duration=${duration}s"
             echo "::endgroup::"
-          done < "$REPORT_DIR/all-chunks.txt"
+          done < "$REPORT_DIR/review-chunks.txt"
 
           echo "failed=${failed}" >> "$GITHUB_OUTPUT"
           echo "reviewed=${reviewed}" >> "$GITHUB_OUTPUT"
@@ -478,7 +538,7 @@ jobs:
             echo "Full main-branch semantic scan. One folder is considered complete only after findings are published as an issue; folders with no findings publish nothing."
             echo
             echo "```json"
-            echo "{\"total_chunks\":\"${{ steps.range.outputs.total_chunks }}\",\"reviewed\":\"${REVIEWED}\",\"finding_chunks\":\"${FINDING_CHUNKS}\",\"issues_published\":\"${ISSUE_COUNT}\",\"failed\":\"${REVIEW_FAILED}\",\"head_sha\":\"${{ steps.range.outputs.head_sha }}\",\"base_sha\":\"${{ steps.range.outputs.base_sha }}\",\"commit_count\":\"${{ steps.range.outputs.commit_count }}\",\"model\":\"${AI_MODEL:-unknown}\",\"run_id\":\"${GITHUB_RUN_ID}\",\"updated_at\":\"$(date -u +%FT%TZ)\"}"
+            echo "{\"total_chunks\":\"${{ steps.range.outputs.total_chunks }}\",\"reviewed\":\"${REVIEWED}\",\"finding_chunks\":\"${FINDING_CHUNKS}\",\"issues_published\":\"${ISSUE_COUNT}\",\"failed\":\"${REVIEW_FAILED}\",\"review_folder\":\"${REVIEW_FOLDER:-}\",\"head_sha\":\"${{ steps.range.outputs.head_sha }}\",\"base_sha\":\"${{ steps.range.outputs.base_sha }}\",\"commit_count\":\"${{ steps.range.outputs.commit_count }}\",\"model\":\"${AI_MODEL:-unknown}\",\"run_id\":\"${GITHUB_RUN_ID}\",\"updated_at\":\"$(date -u +%FT%TZ)\"}"
             echo "```"
           } > "$body_file"
           issue="$(gh issue list -R "$GITHUB_REPOSITORY" --state all --search "$SUMMARY_TITLE in:title" --json number,title --jq '.[] | select(.title == env.SUMMARY_TITLE) | .number' | head -n 1)"
