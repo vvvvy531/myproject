@@ -1,0 +1,190 @@
+name: Automated PR Review CTO
+
+on:
+  repository_dispatch:
+    types: [private-review-cto]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+  statuses: write
+
+concurrency:
+  group: review-cto-${{ github.event.client_payload.source_repo }}-${{ github.event.client_payload.pr_number }}
+  cancel-in-progress: true
+
+env:
+  ARTIFACT_REPO: vvvvy531/myproject-linux-builds
+  CTO_CREDENTIALS_REF: cto-credentials
+  CTO_MODEL: ${{ vars.CTO_MODEL || 'gemini3_1_Pro_Preview' }}
+
+jobs:
+  review:
+    name: CTO PR Review
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      SOURCE_REPO: ${{ github.event.client_payload.source_repo }}
+      PR_NUMBER: ${{ github.event.client_payload.pr_number }}
+      HEAD_SHA: ${{ github.event.client_payload.head_sha }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Validate PR payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$SOURCE_REPO" in
+            vvvvy531/myproject-source) ;;
+            *) echo "Invalid source_repo payload" >&2; exit 1 ;;
+          esac
+          case "$PR_NUMBER" in
+            ''|*[!0-9]*) echo "Invalid pr_number payload" >&2; exit 1 ;;
+          esac
+          echo "Review target: ${SOURCE_REPO}#${PR_NUMBER}"
+          echo "Model: cto/${CTO_MODEL}"
+
+      - name: Mark CTO review pending
+        if: env.HEAD_SHA != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
+        run: |
+          set +x
+          gh api "repos/${SOURCE_REPO}/statuses/${HEAD_SHA}" \
+            -f state=pending -f context="Public CTO PR Review" \
+            -f description="CTO review in progress" -f target_url="$RUN_URL"
+
+      - name: Checkout private source PR
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.SOURCE_REPO }}
+          token: ${{ secrets.PRIVATE_SOURCE_PAT }}
+          ref: refs/pull/${{ env.PR_NUMBER }}/head
+          fetch-depth: 0
+          lfs: false
+          submodules: recursive
+          path: source
+          persist-credentials: false
+
+      - name: Install CTO CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL https://cto.new/install | bash
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/cto" --version
+
+      - name: Restore CTO credentials
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.LINUX_BUILDS_PAT }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.cto"
+          gh api -H 'Accept: application/vnd.github.raw' \
+            "repos/${ARTIFACT_REPO}/contents/cto-auth/credentials?ref=${CTO_CREDENTIALS_REF}" \
+            > "$HOME/.cto/credentials"
+          chmod 600 "$HOME/.cto/credentials"
+          test -s "$HOME/.cto/credentials"
+          echo "CTO credentials restored from ${ARTIFACT_REPO}@${CTO_CREDENTIALS_REF}"
+
+      - name: Prepare PR diff
+        working-directory: source
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
+        run: |
+          set -euo pipefail
+          gh pr diff "$PR_NUMBER" --repo "$SOURCE_REPO" > /tmp/pr-diff.patch
+          gh pr view "$PR_NUMBER" --repo "$SOURCE_REPO" --json title,body,baseRefName,headRefName,files \
+            > /tmp/pr-meta.json
+          echo "Diff bytes: $(wc -c < /tmp/pr-diff.patch)"
+          echo "Changed files: $(jq '.files | length' /tmp/pr-meta.json)"
+
+      - name: Run CTO review
+        id: cto
+        working-directory: source
+        shell: bash
+        env:
+          OPENCODE_CONFIG_CONTENT: ${{ format('{{"model":"cto/{0}"}}', env.CTO_MODEL) }}
+          OPENCODE_DISABLE_AUTOUPDATE: "true"
+          OPENCODE_DISABLE_LSP_DOWNLOAD: "true"
+        run: |
+          set +e
+          set +x
+          title="$(jq -r '.title // ""' /tmp/pr-meta.json)"
+          body="$(jq -r '.body // ""' /tmp/pr-meta.json | head -c 2000)"
+          cat > /tmp/review-prompt.txt <<EOF
+          You are a senior code reviewer. Review this GitHub pull request.
+
+          PR: ${SOURCE_REPO}#${PR_NUMBER}
+          Title: ${title}
+          Body:
+          ${body}
+
+          The PR diff is attached as pr-diff.patch.
+
+          Requirements:
+          - Focus on concrete code-quality issues, bugs, correctness, security, perf, maintainability.
+          - Cite file paths and changed code context where possible.
+          - Do not summarize generic style unless it affects correctness/maintenance.
+          - If no serious issues, say so clearly and list minor risks.
+          - Output Markdown suitable for a GitHub PR comment.
+          EOF
+
+          cto run --model "cto/${CTO_MODEL}" --file /tmp/pr-diff.patch --format default "$(cat /tmp/review-prompt.txt)" \
+            > /tmp/cto-review.md 2> /tmp/cto-review.err
+          status=$?
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          if [[ -s /tmp/cto-review.err ]]; then
+            echo "CTO stderr:"
+            sed -E 's/(cto_|refreshToken|accessToken)[A-Za-z0-9_.-]+/[redacted]/g' /tmp/cto-review.err | tail -120
+          fi
+          exit 0
+
+      - name: Post CTO review comment
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
+          CTO_STATUS: ${{ steps.cto.outputs.status }}
+        run: |
+          set +x
+          if [[ -s /tmp/cto-review.md ]]; then
+            review_body="$(cat /tmp/cto-review.md)"
+          else
+            err="$(sed -E 's/(cto_|refreshToken|accessToken)[A-Za-z0-9_.-]+/[redacted]/g' /tmp/cto-review.err 2>/dev/null | tail -80 || true)"
+            review_body="CTO review produced no output. Exit status: ${CTO_STATUS:-unknown}\n\n\`\`\`\n${err}\n\`\`\`"
+          fi
+
+          cat > /tmp/comment.md <<EOF
+          ## 🤖 CTO AI PR Review
+
+          **Model:** \`cto/${CTO_MODEL}\`
+          **Workflow:** ${RUN_URL}
+
+          ${review_body}
+
+          ---
+          Automated review via cto.new / opencode.
+          EOF
+
+          gh pr comment "$PR_NUMBER" --repo "$SOURCE_REPO" --body-file /tmp/comment.md
+
+      - name: Mark CTO review result
+        if: always() && env.HEAD_SHA != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
+          CTO_STATUS: ${{ steps.cto.outputs.status }}
+        run: |
+          set +x
+          if [[ "${CTO_STATUS:-1}" == "0" ]]; then
+            state=success; description="CTO review completed"
+          else
+            state=failure; description="CTO review failed"
+          fi
+          gh api "repos/${SOURCE_REPO}/statuses/${HEAD_SHA}" \
+            -f state="$state" -f context="Public CTO PR Review" \
+            -f description="$description" -f target_url="$RUN_URL"
