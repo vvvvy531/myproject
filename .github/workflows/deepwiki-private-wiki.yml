@@ -190,8 +190,7 @@ jobs:
               kwargs["dimensions"] = 256
           cfg["embedder"]["batch_size"] = 10
           cfg["embedder"]["model_kwargs"] = kwargs
-          (root / "api/config/embedder.json").write_text(json.dumps(cfg, indent=2) + "
-", encoding="utf-8")
+          (root / "api/config/embedder.json").write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
           print(f"Embedding model selected: {model}; dimensions={actual_dimensions}; request_dimensions={request_dimensions}")
           PY
 
