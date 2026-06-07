@@ -1,10 +1,10 @@
-name: Automated PR Review CTO
+name: Automated AI Task Runner
 
 on:
   repository_dispatch:
     types:
-      - private-review-cto
-      - private-cto-task
+      - private-ai-task
+      - private-ai-task
 
 permissions:
   contents: write
@@ -18,9 +18,9 @@ concurrency:
 
 env:
   ARTIFACT_REPO: vvvvy531/myproject-linux-builds
-  CTO_CREDENTIALS_REF: cto-credentials
-  CTO_CREDENTIALS_PATH: cto-auth/credentials
-  CTO_MODEL: ${{ vars.CTO_MODEL || 'gemini3_1_Pro_Preview' }}
+  AI_CREDENTIALS_REF: cto-credentials
+  AI_CREDENTIALS_PATH: cto-auth/credentials
+  AI_MODEL: ${{ vars.AI_MODEL || 'gemini3_1_Pro_Preview' }}
   TASK_TYPE: ${{ github.event.client_payload.task_type || 'pr-review' }}
   TASK_GOAL: ${{ github.event.client_payload.task_goal || 'Review this pull request for correctness, security, performance, and maintainability issues.' }}
   SOURCE_REPO: ${{ github.event.client_payload.source_repo }}
@@ -30,7 +30,7 @@ env:
 
 jobs:
   run:
-    name: Automated PR Review CTO
+    name: Automated AI Task Runner
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
@@ -46,9 +46,9 @@ jobs:
           echo "source_repo=${SOURCE_REPO}"
           echo "pr_number=${PR_NUMBER:-none}"
           echo "ref=${REF}"
-          echo "model=cto/${CTO_MODEL}"
+          echo "model=provider/${AI_MODEL}"
 
-      - name: Install CTO CLI
+      - name: Install AI CLI
         shell: bash
         run: |
           set -euo pipefail
@@ -56,7 +56,7 @@ jobs:
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           "$HOME/.local/bin/cto" --version
 
-      - name: Restore CTO credentials
+      - name: Restore AI credentials
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.LINUX_BUILDS_PAT }}
@@ -64,11 +64,11 @@ jobs:
           set -euo pipefail
           mkdir -p "$HOME/.cto"
           gh api -H 'Accept: application/vnd.github.raw' \
-            "repos/${ARTIFACT_REPO}/contents/${CTO_CREDENTIALS_PATH}?ref=${CTO_CREDENTIALS_REF}" \
-            > "$HOME/.cto/credentials"
-          chmod 600 "$HOME/.cto/credentials"
-          test -s "$HOME/.cto/credentials"
-          echo "credentials_sha=$(sha256sum "$HOME/.cto/credentials" | awk '{print $1}')" >> "$GITHUB_ENV"
+            "repos/${ARTIFACT_REPO}/contents/${AI_CREDENTIALS_PATH}?ref=${AI_CREDENTIALS_REF}" \
+            > "$HOME/.provider/credentials"
+          chmod 600 "$HOME/.provider/credentials"
+          test -s "$HOME/.provider/credentials"
+          echo "credentials_sha=$(sha256sum "$HOME/.provider/credentials" | awk '{print $1}')" >> "$GITHUB_ENV"
 
       - name: Checkout working repository
         uses: actions/checkout@v4
@@ -108,7 +108,7 @@ jobs:
           echo "Task goal:" >> /tmp/cto-task-context.md
           echo "$TASK_GOAL" >> /tmp/cto-task-context.md
 
-      - name: Run CTO task
+      - name: Run AI task
         id: cto
         working-directory: work
         shell: bash
@@ -123,7 +123,7 @@ jobs:
             extra_flags+=(--file /tmp/pr-diff.patch)
           fi
           cto run \
-            --model "cto/${CTO_MODEL}" \
+            --model "provider/${AI_MODEL}" \
             --format default \
             --dangerously-skip-permissions \
             "${extra_flags[@]}" \
@@ -143,21 +143,21 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
-          CTO_STATUS: ${{ steps.cto.outputs.status }}
+          AI_STATUS: ${{ steps.cto.outputs.status }}
           OUTPUT_BYTES: ${{ steps.cto.outputs.output_bytes }}
         run: |
           set +x
           summary="Task completed"
-          if [[ "${CTO_STATUS:-1}" != "0" ]]; then
+          if [[ "${AI_STATUS:-1}" != "0" ]]; then
             summary="Task failed"
           fi
           if [[ "${OUTPUT_BYTES:-0}" -gt 0 ]]; then
             body="$(head -c 60000 /tmp/cto-output.md)"
           else
-            body="CTO produced no output. Exit status: ${CTO_STATUS:-unknown}"
+            body="AI runner produced no output. Exit status: ${AI_STATUS:-unknown}"
           fi
           cat > /tmp/comment.md <<EOF
-          ## Automated PR Review CTO
+          ## Automated AI Task Runner
 
           - **Task:** \`${TASK_TYPE}\`
           - **Target:** ${SOURCE_REPO}${PR_NUMBER:+#${PR_NUMBER}}
@@ -173,45 +173,46 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
-          CTO_STATUS: ${{ steps.cto.outputs.status }}
+          AI_STATUS: ${{ steps.cto.outputs.status }}
         run: |
           set +x
-          if [[ "${CTO_STATUS:-1}" == "0" ]]; then
-            state=success; description="CTO task completed"
+          if [[ "${AI_STATUS:-1}" == "0" ]]; then
+            state=success; description="AI task completed"
           else
-            state=failure; description="CTO task failed"
+            state=failure; description="AI task failed"
           fi
           gh api "repos/${SOURCE_REPO}/statuses/${HEAD_SHA}" \
-            -f state="$state" -f context="Automated PR Review CTO" \
+            -f state="$state" -f context="Automated AI Task Runner" \
             -f description="$description" -f target_url="$RUN_URL"
 
-      - name: Refresh CTO credentials
+      - name: Refresh AI credentials
         if: always()
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.LINUX_BUILDS_PAT }}
         run: |
           set -euo pipefail
-          if [[ ! -s "$HOME/.cto/credentials" ]]; then
+          if [[ ! -s "$HOME/.provider/credentials" ]]; then
             echo "No credentials file found, skip refresh"
             exit 0
           fi
-          new_sha="$(sha256sum "$HOME/.cto/credentials" | awk '{print $1}')"
+          new_sha="$(sha256sum "$HOME/.provider/credentials" | awk '{print $1}')"
           echo "old_sha=${credentials_sha:-unknown}"
           echo "new_sha=${new_sha}"
           if [[ -n "${credentials_sha:-}" && "${credentials_sha}" == "${new_sha}" ]]; then
             echo "Credentials unchanged"
             exit 0
           fi
-          remote_sha="$(gh api "repos/${ARTIFACT_REPO}/contents/${CTO_CREDENTIALS_PATH}?ref=${CTO_CREDENTIALS_REF}" --jq .sha)"
-          content="$(base64 -w 0 "$HOME/.cto/credentials")"
+          remote_sha="$(gh api "repos/${ARTIFACT_REPO}/contents/${AI_CREDENTIALS_PATH}?ref=${AI_CREDENTIALS_REF}" --jq .sha)"
+          content="$(base64 -w 0 "$HOME/.provider/credentials")"
           payload="$(jq -nc \
-            --arg message "chore: refresh cto credentials from actions" \
-            --arg branch "${CTO_CREDENTIALS_REF}" \
+            --arg message "chore: refresh AI credentials from actions" \
+            --arg branch "${AI_CREDENTIALS_REF}" \
             --arg sha "$remote_sha" \
             --arg content "$content" \
             '{message:$message,branch:$branch,sha:$sha,content:$content}')"
           tmp="$(mktemp)"
           printf '%s' "$payload" > "$tmp"
-          gh api --method PUT "repos/${ARTIFACT_REPO}/contents/${CTO_CREDENTIALS_PATH}" --input "$tmp" --jq '.commit.sha'
+          gh api --method PUT "repos/${ARTIFACT_REPO}/contents/${AI_CREDENTIALS_PATH}" --input "$tmp" --jq '.commit.sha'
           rm -f "$tmp"
+
