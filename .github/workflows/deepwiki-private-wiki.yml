@@ -242,7 +242,12 @@ jobs:
           git -C "$work" remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${PRIVATE_SOURCE_REPO}.git"
           git -C "$work" config user.name "github-actions[bot]"
           git -C "$work" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git -C "$work" checkout -B "$BRANCH"
+          if git -C "$work" ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then
+            git -C "$work" fetch origin "$BRANCH" >/dev/null 2>&1
+            git -C "$work" checkout -B "$BRANCH" "origin/$BRANCH"
+          else
+            git -C "$work" checkout -B "$BRANCH"
+          fi
           mkdir -p "$work/$OUTPUT_PATH"
           rsync -a --delete "$out/" "$work/$OUTPUT_PATH/"
           git -C "$work" add "$OUTPUT_PATH"
