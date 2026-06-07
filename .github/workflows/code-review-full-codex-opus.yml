@@ -345,6 +345,79 @@ jobs:
           }
           JSON
 
+          cat > "$REPORT_DIR/parse-final.py" <<'PY'
+          import json, sys, re
+          from pathlib import Path
+          chunk, in_file, out_file, meta_file = sys.argv[1], Path(sys.argv[2]), Path(sys.argv[3]), Path(sys.argv[4])
+          raw = in_file.read_text(encoding='utf-8', errors='replace') if in_file.exists() else ''
+          s = raw.strip()
+          if not s:
+              Path(meta_file).write_text('parse_status=empty\nfindings_count=0\n', encoding='utf-8')
+              sys.exit(2)
+          lowered = s.lower()
+          no_finding_markers = [
+              'no findings', 'no high-confidence findings', 'no high confidence findings',
+              'no issues found', 'no issues were found', 'nothing to report',
+              '未发现', '没有发现', '未找到', '无发现', '无问题', '没有问题',
+          ]
+          if any(marker in lowered for marker in no_finding_markers) and len(s) <= 500:
+              Path(meta_file).write_text('parse_status=ok_text_no_findings\nfindings_count=0\n', encoding='utf-8')
+              sys.exit(0)
+          data = None
+          candidates = [s]
+          fence = re.search(r'```(?:json)?\s*(.*?)\s*```', s, re.S | re.I)
+          if fence:
+              candidates.append(fence.group(1).strip())
+          decoder = json.JSONDecoder()
+          for candidate in candidates:
+              try:
+                  data = json.loads(candidate)
+                  break
+              except Exception:
+                  pass
+              for idx, ch in enumerate(candidate):
+                  if ch != '{':
+                      continue
+                  try:
+                      obj, _ = decoder.raw_decode(candidate[idx:])
+                      data = obj
+                      break
+                  except Exception:
+                      continue
+              if data is not None:
+                  break
+          if data is None:
+              Path(meta_file).write_text('parse_status=invalid_json\nfindings_count=0\n', encoding='utf-8')
+              sys.exit(2)
+          if not isinstance(data, dict) or 'findings' not in data or not isinstance(data.get('findings'), list):
+              Path(meta_file).write_text('parse_status=missing_findings\nfindings_count=0\n', encoding='utf-8')
+              sys.exit(2)
+          findings = data.get('findings')
+          Path(meta_file).write_text(f'parse_status=ok\nfindings_count={len(findings)}\n', encoding='utf-8')
+          if not findings:
+              sys.exit(0)
+          with out_file.open('w', encoding='utf-8') as f:
+              f.write(f'# Codex Automated Review: {chunk}\n\n')
+              f.write(f'Found {len(findings)} high-confidence finding(s).\n\n')
+              for i, item in enumerate(findings, 1):
+                  sev = str(item.get('severity', 'unknown')).strip()
+                  title = str(item.get('title', 'Untitled finding')).strip()
+                  file = str(item.get('file', 'unknown')).strip()
+                  line = item.get('line', 0)
+                  evidence = str(item.get('evidence', '')).strip()
+                  impact = str(item.get('impact', '')).strip()
+                  fix = str(item.get('fix', '')).strip()
+                  f.write(f'## {i}. [{sev}] {title}\n\n')
+                  f.write(f'- File: `{file}`\n')
+                  f.write(f'- Line: {line}\n\n')
+                  if evidence:
+                      f.write(f'**Evidence:** {evidence}\n\n')
+                  if impact:
+                      f.write(f'**Impact:** {impact}\n\n')
+                  if fix:
+                      f.write(f'**Suggested fix:** {fix}\n\n')
+          PY
+
           while IFS= read -r dir; do
             [[ -n "$dir" ]] || continue
             reviewed=$((reviewed + 1))
@@ -409,77 +482,7 @@ jobs:
               continue
             fi
 
-            python3 - "$dir" "$final_file" "$body_file" "$meta_file" <<'PY'
-          import json, sys, re
-          from pathlib import Path
-          chunk, in_file, out_file, meta_file = sys.argv[1], Path(sys.argv[2]), Path(sys.argv[3]), Path(sys.argv[4])
-          raw = in_file.read_text(encoding='utf-8', errors='replace') if in_file.exists() else ''
-          s = raw.strip()
-          if not s:
-              Path(meta_file).write_text('parse_status=empty\nfindings_count=0\n', encoding='utf-8')
-              sys.exit(2)
-          lowered = s.lower()
-          no_finding_markers = [
-              'no findings', 'no high-confidence findings', 'no high confidence findings',
-              'no issues found', 'no issues were found', 'nothing to report',
-          ]
-          if any(marker in lowered for marker in no_finding_markers) and len(s) <= 500:
-              Path(meta_file).write_text('parse_status=ok_text_no_findings\nfindings_count=0\n', encoding='utf-8')
-              sys.exit(0)
-          data = None
-          candidates = [s]
-          fence = re.search(r'```(?:json)?\s*(.*?)\s*```', s, re.S | re.I)
-          if fence:
-              candidates.append(fence.group(1).strip())
-          decoder = json.JSONDecoder()
-          for candidate in candidates:
-              try:
-                  data = json.loads(candidate)
-                  break
-              except Exception:
-                  pass
-              for idx, ch in enumerate(candidate):
-                  if ch != '{':
-                      continue
-                  try:
-                      obj, _ = decoder.raw_decode(candidate[idx:])
-                      data = obj
-                      break
-                  except Exception:
-                      continue
-              if data is not None:
-                  break
-          if data is None:
-              Path(meta_file).write_text('parse_status=invalid_json\nfindings_count=0\n', encoding='utf-8')
-              sys.exit(2)
-          if not isinstance(data, dict) or 'findings' not in data or not isinstance(data.get('findings'), list):
-              Path(meta_file).write_text('parse_status=missing_findings\nfindings_count=0\n', encoding='utf-8')
-              sys.exit(2)
-          findings = data.get('findings')
-          Path(meta_file).write_text(f'parse_status=ok\nfindings_count={len(findings)}\n', encoding='utf-8')
-          if not findings:
-              sys.exit(0)
-          with out_file.open('w', encoding='utf-8') as f:
-              f.write(f'# Codex Automated Review: {chunk}\n\n')
-              f.write(f'Found {len(findings)} high-confidence finding(s).\n\n')
-              for i, item in enumerate(findings, 1):
-                  sev = str(item.get('severity', 'unknown')).strip()
-                  title = str(item.get('title', 'Untitled finding')).strip()
-                  file = str(item.get('file', 'unknown')).strip()
-                  line = item.get('line', 0)
-                  evidence = str(item.get('evidence', '')).strip()
-                  impact = str(item.get('impact', '')).strip()
-                  fix = str(item.get('fix', '')).strip()
-                  f.write(f'## {i}. [{sev}] {title}\n\n')
-                  f.write(f'- File: `{file}`\n')
-                  f.write(f'- Line: {line}\n\n')
-                  if evidence:
-                      f.write(f'**Evidence:** {evidence}\n\n')
-                  if impact:
-                      f.write(f'**Impact:** {impact}\n\n')
-                  if fix:
-                      f.write(f'**Suggested fix:** {fix}\n\n')
-          PY
+            python3 "$REPORT_DIR/parse-final.py" "$dir" "$final_file" "$body_file" "$meta_file"
             parse_rc=$?
             parse_status="unknown"
             findings_count="0"
@@ -489,11 +492,57 @@ jobs:
             fi
 
             if [[ $parse_rc -ne 0 ]]; then
-              echo "Folder result: parse_failed; parse_status=${parse_status}; duration=${duration}s; stdout_bytes=${stdout_bytes}; stderr_bytes=${stderr_bytes}; final_bytes=${final_bytes}"
-              failed=$((failed + 1))
-              printf '%s\tfailure:parse:%s\n' "$dir" "$parse_status" >> "$REPORT_DIR/chunk-status.tsv"
-              echo "::endgroup::"
-              continue
+              echo "Parse failed on first attempt; parse_status=${parse_status}; retrying once with strict JSON-only prompt"
+              retry_prompt="$REPORT_DIR/prompts/${safe}-retry.md"
+              {
+                cat "$prompt"
+                printf '\n%s\n' 'IMPORTANT RETRY: Your previous answer was not parseable JSON. Return ONLY one JSON object exactly like {"findings":[]}. No prose, no markdown, no code fences.'
+              } > "$retry_prompt"
+              rm -f "$body_file" "$meta_file" "$final_file" "$stdout_file" "$stderr_file"
+              retry_started_at=$(date +%s)
+              codex exec \
+                --skip-git-repo-check \
+                --ephemeral \
+                --color never \
+                --output-schema "$REPORT_DIR/finding-schema.json" \
+                -o "$final_file" \
+                -C source \
+                -m "$AI_MODEL" \
+                -c 'approval_policy="never"' \
+                -c 'sandbox_mode="danger-full-access"' \
+                < "$retry_prompt" \
+                > "$stdout_file" \
+                2> "$stderr_file"
+              rc=$?
+              retry_duration=$(( $(date +%s) - retry_started_at ))
+              duration=$(( duration + retry_duration ))
+              stdout_bytes=$(wc -c < "$stdout_file" 2>/dev/null | tr -d ' ' || echo 0)
+              stderr_bytes=$(wc -c < "$stderr_file" 2>/dev/null | tr -d ' ' || echo 0)
+              final_bytes=$(wc -c < "$final_file" 2>/dev/null | tr -d ' ' || echo 0)
+              git -C source reset --hard HEAD >/dev/null 2>&1 || true
+              git -C source clean -fd -e AGENTS.md >/dev/null 2>&1 || true
+              if [[ $rc -ne 0 ]]; then
+                echo "Folder result: codex_failed; exit=${rc}; duration=${duration}s; stdout_bytes=${stdout_bytes}; stderr_bytes=${stderr_bytes}; final_bytes=${final_bytes}; attempts=2"
+                failed=$((failed + 1))
+                printf '%s\tfailure:codex:%s\n' "$dir" "$rc" >> "$REPORT_DIR/chunk-status.tsv"
+                echo "::endgroup::"
+                continue
+              fi
+              python3 "$REPORT_DIR/parse-final.py" "$dir" "$final_file" "$body_file" "$meta_file"
+              parse_rc=$?
+              parse_status="unknown"
+              findings_count="0"
+              if [[ -s "$meta_file" ]]; then
+                parse_status="$(grep '^parse_status=' "$meta_file" | cut -d= -f2- || echo unknown)"
+                findings_count="$(grep '^findings_count=' "$meta_file" | cut -d= -f2- || echo 0)"
+              fi
+              if [[ $parse_rc -ne 0 ]]; then
+                echo "Folder result: parse_failed; parse_status=${parse_status}; duration=${duration}s; stdout_bytes=${stdout_bytes}; stderr_bytes=${stderr_bytes}; final_bytes=${final_bytes}; attempts=2"
+                failed=$((failed + 1))
+                printf '%s\tfailure:parse:%s\n' "$dir" "$parse_status" >> "$REPORT_DIR/chunk-status.tsv"
+                echo "::endgroup::"
+                continue
+              fi
             fi
 
             if [[ ! -s "$body_file" ]]; then
