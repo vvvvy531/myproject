@@ -161,7 +161,7 @@ jobs:
           cat > /tmp/comment.md <<EOF
           ## 🤖 CTO AI PR Review
 
-          **Model:** \`cto/${CTO_MODEL}\`  
+          **Model:** \`cto/${CTO_MODEL}\`
           **Workflow:** ${RUN_URL}
 
           ${review_body}
