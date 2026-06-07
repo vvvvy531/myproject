@@ -165,27 +165,7 @@ jobs:
         run: |
           set -euo pipefail
           if [[ -s /tmp/ai-output.md ]]; then
-            python3 - <<'PY' /tmp/ai-output.md
-            import pathlib, re, sys
-            path = pathlib.Path(sys.argv[1])
-            lines = path.read_text(encoding='utf-8', errors='replace').splitlines()
-            out = []
-            skip = False
-            for line in lines:
-                if 'Sponsored' in line:
-                    skip = True
-                    continue
-                if skip:
-                    stripped = line.strip()
-                    if stripped and len(stripped) >= 8 and len(set(stripped)) <= 3:
-                        skip = False
-                    continue
-                out.append(line)
-            NL = chr(10)
-            text = NL.join(out)
-            text = re.sub(NL + r'{3,}', NL + NL, text).strip() + NL
-            path.write_text(text, encoding='utf-8')
-            PY
+            python3 -c 'import pathlib,re; p=pathlib.Path("/tmp/ai-output.md"); text=p.read_text(encoding="utf-8", errors="replace"); text=re.sub(r"(?s)\n?.*Sponsored.*?\n[^A-Za-z0-9\n]{8,}\n?", "\n", text); text=re.sub(r"\n{3,}", "\n\n", text).strip() + "\n"; p.write_text(text, encoding="utf-8")'
           fi
 
       - name: Detect changes
