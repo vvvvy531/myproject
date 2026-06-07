@@ -1,4 +1,4 @@
-name: Codex Issue Solver
+name: Issue Solver
 
 on:
   repository_dispatch:
