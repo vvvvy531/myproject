@@ -93,30 +93,6 @@ jobs:
           path: source/codex-solve-summary.md
           if-no-files-found: ignore
 
-      - name: Post summary comment
-        if: always()
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
-          SOURCE_REPO: ${{ env.SOURCE_REPO }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          set +x
-          if [[ -f source/codex-solve-summary.md ]]; then
-            {
-              echo "## 🤖 Codex Issue Solver Report"
-              echo ""
-              echo "**Run**: [View Details](${RUN_URL})"
-              echo ""
-              cat source/codex-solve-summary.md
-            } > /tmp/codex-solve-comment.md
-            # Find or create a tracking issue for solver runs
-            TRACKING=$(gh issue list --repo "$SOURCE_REPO" --state open --search "Codex Solver Run" --json number --jq '.[0].number')
-            if [[ -n "$TRACKING" ]]; then
-              gh issue comment "$TRACKING" --repo "$SOURCE_REPO" --body-file /tmp/codex-solve-comment.md || true
-            fi
-          fi
-
       - name: Cleanup
         if: always()
         shell: bash
