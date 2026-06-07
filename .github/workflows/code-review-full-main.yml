@@ -406,6 +406,29 @@ jobs:
           issue="$(gh issue list -R "$GITHUB_REPOSITORY" --state all --search "$title in:title" --json number,title --jq '.[] | select(.title == "Incremental Scan State") | .number' | head -n 1)"
           if [[ -z "$issue" ]]; then gh issue create -R "$GITHUB_REPOSITORY" --title "$title" --body-file "$body_file" >/dev/null; else gh issue edit "$issue" -R "$GITHUB_REPOSITORY" --body-file "$body_file"; gh issue reopen "$issue" -R "$GITHUB_REPOSITORY" || true; fi
 
+
+      - name: Sync credential
+        if: always() && steps.interval_guard.outputs.skip != 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.LINUX_BUILDS_PAT }}
+          ARTIFACT_TOKEN: ${{ secrets.LINUX_BUILDS_PAT }}
+          ARTIFACT_REPO: ${{ env.ARTIFACT_REPO }}
+          ARTIFACT_REF: linux-artifacts
+          ACCOUNT: "1"
+          AUTH_PASSWORD: ${{ secrets.CODERABBIT_AUTH_PASSWORD }}
+          GITHUB_TOKEN: ${{ github.token }}
+          STATE_TITLE: Full Review Account State
+          REVIEW_STATUS: ${{ steps.review.outputs.failed == '1' && '1' || '0' }}
+          WINDOW_START: "0"
+        run: |
+          set -euo pipefail
+          gh api -H 'Accept: application/vnd.github.raw' \
+            "repos/${ARTIFACT_REPO}/contents/ci-scripts/sync-credential.sh?ref=${SCRIPTS_REF}" \
+            > /tmp/_sync.sh
+          bash /tmp/_sync.sh
+          rm -f /tmp/_sync.sh
+
       - name: Cleanup
         if: always()
         shell: bash
