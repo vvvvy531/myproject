@@ -67,9 +67,17 @@ def send_websocket_request(ws_url: str, payload: dict) -> str:
     return "".join(collected)
 
 
+def response_preview(text: str, limit: int = 800) -> str:
+    clean = re.sub(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]", "", text)
+    clean = re.sub(r"\s+", " ", clean).strip()
+    return clean[:limit]
+
+
 def parse_wiki_structure_xml(text: str) -> dict:
     match = re.search(r"<wiki_structure>[\s\S]*?</wiki_structure>", text)
     if not match:
+        if os.environ.get("DEEPWIKI_DEBUG_RESPONSE") == "true":
+            print(f"DeepWiki structure response preview: {response_preview(text)}", file=sys.stderr)
         raise SystemExit("No <wiki_structure> block found in response")
     xml_text = match.group(0)
     xml_text = re.sub(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]", "", xml_text)

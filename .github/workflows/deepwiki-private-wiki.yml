@@ -191,11 +191,13 @@ jobs:
         env:
           DEEPWIKI_MODEL: ${{ secrets.ISSUE_SOLVER_MODEL || 'opus' }}
           COMPREHENSIVE: ${{ inputs.comprehensive }}
+          TARGET: ${{ inputs.target }}
         run: |
           set +x
           set -euo pipefail
           . .venv/bin/activate
           out="$RUNNER_TEMP/deepwiki-output"
+          if [[ "$TARGET" == "smoke" ]]; then export DEEPWIKI_DEBUG_RESPONSE=true; fi
           extra=()
           if [[ "$COMPREHENSIVE" == "true" ]]; then extra+=(--comprehensive); fi
           python .github/scripts/headless_deepwiki.py \
