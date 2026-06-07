@@ -1,0 +1,262 @@
+name: DeepWiki Private Wiki
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: smoke uses an isolated sample folder; private-source uses the private source checkout
+        required: true
+        default: smoke
+        type: choice
+        options:
+          - smoke
+          - private-source
+      output_path:
+        description: Path inside the private source repo where wiki markdown is written
+        required: false
+        default: Docs/DeepWikiSmoke
+        type: string
+      branch:
+        description: Private source branch to update
+        required: false
+        default: automation/deepwiki-wiki-smoke
+        type: string
+      comprehensive:
+        description: Generate comprehensive page set
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: deepwiki-private-wiki-${{ github.event.inputs.target }}
+  cancel-in-progress: false
+
+env:
+  PRIVATE_SOURCE_REPO: vvvvy531/myproject-source
+  DEEPWIKI_OPEN_REPO: https://github.com/AsyncFuncAI/deepwiki-open.git
+  DEEPWIKI_OPEN_REF: main
+  DEEPWIKI_BASE_URL: http://127.0.0.1:8001
+  DEEPWIKI_PROVIDER: openai
+  DEEPWIKI_LANGUAGE: en
+
+jobs:
+  generate:
+    name: Generate private DeepWiki
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout public workflow repo
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+
+      - name: Validate secrets
+        shell: bash
+        env:
+          PRIVATE_SOURCE_PAT: ${{ secrets.PRIVATE_SOURCE_PAT }}
+          REVIEW_PROXY_KEY: ${{ secrets.REVIEW_PROXY_KEY }}
+          REVIEW_PROXY_URL: ${{ secrets.REVIEW_PROXY_URL }}
+          REVIEW_MODEL: ${{ secrets.REVIEW_MODEL }}
+        run: |
+          set +x
+          set -euo pipefail
+          for name in PRIVATE_SOURCE_PAT REVIEW_PROXY_KEY REVIEW_PROXY_URL REVIEW_MODEL; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "$name is required" >&2
+              exit 1
+            fi
+          done
+          echo "Required secrets are present."
+
+      - name: Checkout DeepWiki Open
+        shell: bash
+        run: |
+          set +x
+          set -euo pipefail
+          git clone --depth 1 --branch "$DEEPWIKI_OPEN_REF" "$DEEPWIKI_OPEN_REPO" deepwiki-open
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('deepwiki-open/api/api.py')
+          s = p.read_text(encoding='utf-8')
+          s = s.replace('app.add_websocket_route("/ws/chat", handle_websocket_chat)', 'app.add_api_websocket_route("/ws/chat", handle_websocket_chat)')
+          p.write_text(s, encoding='utf-8')
+          PY
+
+      - name: Install DeepWiki backend dependencies
+        shell: bash
+        run: |
+          set +x
+          set -euo pipefail
+          python3 -m venv .venv
+          . .venv/bin/activate
+          python -m pip install --upgrade pip
+          python -m pip install -r .github/scripts/deepwiki-api-requirements.txt
+
+      - name: Prepare source folder
+        id: source
+        shell: bash
+        env:
+          TARGET: ${{ inputs.target }}
+          PRIVATE_SOURCE_PAT: ${{ secrets.PRIVATE_SOURCE_PAT }}
+        run: |
+          set +x
+          set -euo pipefail
+          if [[ "$TARGET" == "smoke" ]]; then
+            src="$RUNNER_TEMP/deepwiki-smoke-source"
+            mkdir -p "$src/src"
+            cat > "$src/README.md" <<'EOF'
+          # DeepWiki Smoke Project
+
+          Isolated sample folder for public Action DeepWiki validation.
+          EOF
+            cat > "$src/src/app.py" <<'EOF'
+          from config import MESSAGE
+
+          def main():
+              return f"DeepWiki smoke: {MESSAGE}"
+          EOF
+            cat > "$src/src/config.py" <<'EOF'
+          MESSAGE = "ok"
+          EOF
+            owner="smoke"
+            repo="deepwiki-smoke"
+          else
+            src="$RUNNER_TEMP/private-source"
+            gh repo clone "$PRIVATE_SOURCE_REPO" "$src" -- --depth 1
+            find "$src" \
+              \( -type d \( \
+                -name .git -o -name .github -o -name .vs -o -name .vscode -o \
+                -name Binaries -o -name Build -o -name DerivedDataCache -o -name Intermediate -o -name Saved -o \
+                -name node_modules -o -name vendor -o -name vendors -o -name third_party -o -name ThirdParty -o \
+                -name External -o -name Externals -o -name Libraries -o -name Library -o -name SDK -o -name SDKs \
+              \) -prune -print \) | while IFS= read -r d; do rm -rf "$d"; done
+            owner="vvvvy531"
+            repo="myproject-source"
+          fi
+          echo "repo_path=$src" >> "$GITHUB_OUTPUT"
+          echo "owner=$owner" >> "$GITHUB_OUTPUT"
+          echo "repo=$repo" >> "$GITHUB_OUTPUT"
+          echo "Prepared source folder for target=$TARGET"
+
+      - name: Start DeepWiki API
+        shell: bash
+        env:
+          OPENAI_API_KEY: ${{ secrets.REVIEW_PROXY_KEY }}
+          OPENAI_BASE_URL: ${{ secrets.REVIEW_PROXY_URL }}
+          GOOGLE_API_KEY: dummy
+          NODE_ENV: production
+          DEEPWIKI_EMBEDDER_TYPE: openai
+          PYTHONPATH: ${{ github.workspace }}/deepwiki-open
+          PORT: "8001"
+        run: |
+          set +x
+          set -euo pipefail
+          . .venv/bin/activate
+          nohup python -m api.main > "$RUNNER_TEMP/deepwiki-api.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/deepwiki-api.pid"
+          for i in {1..90}; do
+            if curl -fsS "$DEEPWIKI_BASE_URL/health" >/dev/null 2>&1; then
+              echo "DeepWiki API is healthy."
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "DeepWiki API failed health check" >&2
+          tail -n 80 "$RUNNER_TEMP/deepwiki-api.log" >&2 || true
+          exit 1
+
+      - name: Generate wiki markdown
+        shell: bash
+        env:
+          OPENAI_API_KEY: ${{ secrets.REVIEW_PROXY_KEY }}
+          OPENAI_BASE_URL: ${{ secrets.REVIEW_PROXY_URL }}
+          DEEPWIKI_MODEL: ${{ secrets.REVIEW_MODEL }}
+          NO_PROXY: 127.0.0.1,localhost
+          no_proxy: 127.0.0.1,localhost
+          COMPREHENSIVE: ${{ inputs.comprehensive }}
+        run: |
+          set +x
+          set -euo pipefail
+          . .venv/bin/activate
+          out="$RUNNER_TEMP/deepwiki-output"
+          extra=()
+          if [[ "$COMPREHENSIVE" == "true" ]]; then extra+=(--comprehensive); fi
+          python .github/scripts/headless_deepwiki.py \
+            --base-url "$DEEPWIKI_BASE_URL" \
+            --repo-path "${{ steps.source.outputs.repo_path }}" \
+            --owner "${{ steps.source.outputs.owner }}" \
+            --repo "${{ steps.source.outputs.repo }}" \
+            --provider "$DEEPWIKI_PROVIDER" \
+            --model "$DEEPWIKI_MODEL" \
+            --output-dir "$out" \
+            "${extra[@]}"
+          test -s "$out/index.md"
+          count="$(find "$out" -type f -name '*.md' | wc -l)"
+          if (( count < 2 )); then
+            echo "Expected at least 2 markdown files, got $count" >&2
+            exit 1
+          fi
+          echo "Generated $count markdown file(s)."
+
+      - name: Push wiki to private source branch and PR
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
+          BRANCH: ${{ inputs.branch }}
+          OUTPUT_PATH: ${{ inputs.output_path }}
+          TARGET: ${{ inputs.target }}
+        run: |
+          set +x
+          set -euo pipefail
+          out="$RUNNER_TEMP/deepwiki-output"
+          work="$RUNNER_TEMP/private-output"
+          gh repo clone "$PRIVATE_SOURCE_REPO" "$work" -- --depth 1
+          git -C "$work" config user.name "github-actions[bot]"
+          git -C "$work" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git -C "$work" checkout -B "$BRANCH"
+          mkdir -p "$work/$OUTPUT_PATH"
+          rsync -a --delete "$out/" "$work/$OUTPUT_PATH/"
+          git -C "$work" add "$OUTPUT_PATH"
+          if git -C "$work" diff --cached --quiet; then
+            echo "No wiki changes to commit."
+          else
+            git -C "$work" commit -m "Update DeepWiki private wiki"
+            git -C "$work" push origin "HEAD:$BRANCH" --force-with-lease
+          fi
+          if gh pr view "$BRANCH" --repo "$PRIVATE_SOURCE_REPO" >/dev/null 2>&1; then
+            echo "Private source PR already exists for $BRANCH."
+          else
+            gh pr create \
+              --repo "$PRIVATE_SOURCE_REPO" \
+              --head "$BRANCH" \
+              --base main \
+              --title "Update DeepWiki private wiki ($TARGET)" \
+              --body "Generated by public DeepWiki workflow run ${GITHUB_RUN_ID}. Output path: ${OUTPUT_PATH}." >/dev/null
+            echo "Created private source PR for $BRANCH."
+          fi
+
+      - name: Cleanup generated data and processes
+        if: always()
+        shell: bash
+        run: |
+          set +x
+          if [[ -f "$RUNNER_TEMP/deepwiki-api.pid" ]]; then
+            kill "$(cat "$RUNNER_TEMP/deepwiki-api.pid")" 2>/dev/null || true
+          fi
+          rm -rf "$RUNNER_TEMP/deepwiki-output" "$RUNNER_TEMP/deepwiki-smoke-source" "$RUNNER_TEMP/private-source" "$RUNNER_TEMP/private-output" "$RUNNER_TEMP/deepwiki-api.log" ~/.adalflow deepwiki-open .venv
+
+      - name: Delete public run logs
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set +x
+          gh api --method DELETE "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/logs" >/dev/null 2>&1 || true
