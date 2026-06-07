@@ -16,6 +16,222 @@ import requests
 import websocket
 
 
+TEXT_SUFFIXES = {
+    ".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx",
+    ".cs", ".py", ".js", ".jsx", ".ts", ".tsx", ".json", ".yml", ".yaml",
+    ".ini", ".uproject", ".uplugin", ".md", ".txt", ".sh", ".bat", ".ps1",
+    ".cmake", ".target", ".build", ".rs", ".go", ".java", ".kt", ".swift",
+}
+
+EXCLUDED_PARTS = {
+    ".git", ".github", ".vs", ".vscode", "Binaries", "Build", "DerivedDataCache",
+    "Intermediate", "Saved", "node_modules", "vendor", "vendors", "third_party",
+    "ThirdParty", "External", "Externals", "Libraries", "Library", "SDK", "SDKs",
+    "__pycache__", ".venv", "venv", "dist",
+}
+
+
+def normalize_openai_base_url() -> str:
+    base = os.environ.get("OPENAI_BASE_URL") or os.environ.get("REVIEW_PROXY_URL", "")
+    if not base:
+        raise RuntimeError("OPENAI_BASE_URL or REVIEW_PROXY_URL is required for direct generation fallback")
+    base = base.rstrip("/")
+    if not base.endswith("/v1"):
+        base = f"{base}/v1"
+    return base
+
+
+def extract_text_from_response(payload: dict) -> str:
+    if isinstance(payload.get("output_text"), str):
+        return payload["output_text"]
+    texts: list[str] = []
+
+    def walk(value):
+        if isinstance(value, dict):
+            if isinstance(value.get("text"), str):
+                texts.append(value["text"])
+            elif isinstance(value.get("content"), str):
+                texts.append(value["content"])
+            for child in value.values():
+                if isinstance(child, (dict, list)):
+                    walk(child)
+        elif isinstance(value, list):
+            for item in value:
+                walk(item)
+
+    if "output" in payload:
+        walk(payload["output"])
+    if not texts and payload.get("choices"):
+        walk(payload["choices"])
+    return "\n".join(t for t in texts if t).strip()
+
+
+def call_remote_model(prompt: str, model: str, timeout: int = 180) -> str:
+    api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("REVIEW_PROXY_KEY")
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY or REVIEW_PROXY_KEY is required for direct generation fallback")
+    base_url = normalize_openai_base_url()
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    attempts: list[str] = []
+
+    response_payload = {"model": model, "input": prompt}
+    try:
+        response = requests.post(f"{base_url}/responses", headers=headers, json=response_payload, timeout=timeout)
+        if response.ok:
+            text = extract_text_from_response(response.json())
+            if text:
+                return text
+            attempts.append("/responses returned no text")
+        else:
+            attempts.append(f"/responses HTTP {response.status_code}: {response.text[:240]}")
+    except Exception as exc:
+        attempts.append(f"/responses {type(exc).__name__}: {exc}")
+
+    chat_payload = {"model": model, "messages": [{"role": "user", "content": prompt}], "temperature": 0.2}
+    try:
+        response = requests.post(f"{base_url}/chat/completions", headers=headers, json=chat_payload, timeout=timeout)
+        if response.ok:
+            text = extract_text_from_response(response.json())
+            if text:
+                return text
+            attempts.append("/chat/completions returned no text")
+        else:
+            attempts.append(f"/chat/completions HTTP {response.status_code}: {response.text[:240]}")
+    except Exception as exc:
+        attempts.append(f"/chat/completions {type(exc).__name__}: {exc}")
+
+    raise RuntimeError("Remote model request failed: " + " | ".join(attempts))
+
+
+def should_include_file(path: Path) -> bool:
+    if any(part in EXCLUDED_PARTS for part in path.parts):
+        return False
+    if path.suffix and path.suffix.lower() not in TEXT_SUFFIXES:
+        return False
+    try:
+        return path.is_file() and path.stat().st_size <= 200_000
+    except OSError:
+        return False
+
+
+def collect_source_context(repo_path: str, file_paths: list[str] | None = None, max_files: int = 24, max_chars: int = 80_000) -> str:
+    root = Path(repo_path)
+    if not repo_path or not root.exists():
+        return ""
+
+    candidates: list[Path] = []
+    if file_paths:
+        for rel in file_paths:
+            rel_path = Path(rel)
+            path = root / rel_path
+            if should_include_file(path):
+                candidates.append(path)
+    if not candidates:
+        candidates = [p for p in root.rglob("*") if should_include_file(p)]
+        candidates.sort(key=lambda p: (len(p.parts), str(p).lower()))
+
+    chunks: list[str] = []
+    used = 0
+    for path in candidates[:max_files]:
+        try:
+            rel = path.relative_to(root).as_posix()
+            text = path.read_text(encoding="utf-8", errors="ignore")[:6000]
+        except Exception:
+            continue
+        block = f"<file path=\"{rel}\">\n{text}\n</file>"
+        if used + len(block) > max_chars:
+            break
+        chunks.append(block)
+        used += len(block)
+    return "\n\n".join(chunks)
+
+
+def fallback_structure(display_name: str, file_tree: str, is_comprehensive: bool) -> dict:
+    paths = []
+    for raw in file_tree.splitlines():
+        line = raw.strip().lstrip("-├─└│ ").strip()
+        if not line or line.endswith("/"):
+            continue
+        if any(part in EXCLUDED_PARTS for part in Path(line).parts):
+            continue
+        suffix = Path(line).suffix.lower()
+        if not suffix or suffix in TEXT_SUFFIXES:
+            paths.append(line)
+    paths = list(dict.fromkeys(paths))[:40]
+    page_defs = [
+        ("overview", "Project Overview", paths[:8]),
+        ("architecture", "Architecture", paths[2:14] or paths[:8]),
+        ("configuration", "Configuration", [p for p in paths if Path(p).suffix.lower() in {".json", ".yml", ".yaml", ".ini", ".uproject", ".uplugin"}][:10] or paths[:6]),
+        ("development-workflow", "Development Workflow", paths[:10]),
+    ]
+    if is_comprehensive:
+        page_defs.extend([
+            ("key-modules", "Key Modules", paths[4:20] or paths[:10]),
+            ("runtime-behavior", "Runtime Behavior", paths[6:22] or paths[:10]),
+        ])
+    return {
+        "title": f"{display_name} Wiki",
+        "description": "Generated DeepWiki-style documentation.",
+        "pages": [
+            {
+                "id": page_id,
+                "title": title,
+                "importance": "high" if idx == 0 else "medium",
+                "filePaths": files,
+                "relatedPages": [other_id for other_id, _, _ in page_defs if other_id != page_id][:3],
+                "content": "",
+            }
+            for idx, (page_id, title, files) in enumerate(page_defs)
+        ],
+    }
+
+
+def generate_structure_direct(repo_path: str, display_name: str, file_tree: str, model: str, language: str, is_comprehensive: bool) -> dict:
+    page_count = "8-12" if is_comprehensive else "4-6"
+    source_context = collect_source_context(repo_path, max_files=32, max_chars=90_000)
+    prompt = (
+        f"Create a DeepWiki-style wiki structure for repository {display_name}.\n"
+        f"Language: {language}.\n"
+        f"Create {page_count} pages. Use stable page ids such as overview, architecture, workflow.\n\n"
+        f"File tree:\n<file_tree>\n{file_tree}\n</file_tree>\n\n"
+        f"Source excerpts:\n<source_context>\n{source_context}\n</source_context>\n\n"
+        "Return ONLY this XML, no markdown fences:\n"
+        "<wiki_structure>\n"
+        "  <title>...</title>\n"
+        "  <description>...</description>\n"
+        "  <page id=\"overview\">\n"
+        "    <title>...</title>\n"
+        "    <importance>high</importance>\n"
+        "    <file_path>relative/path</file_path>\n"
+        "    <related>another-page-id</related>\n"
+        "  </page>\n"
+        "</wiki_structure>"
+    )
+    try:
+        text = call_remote_model(prompt, model)
+        if os.environ.get("DEEPWIKI_DEBUG_RESPONSE") == "true" and "<wiki_structure" not in text:
+            print(f"Direct structure response preview: {response_preview(text)}", file=sys.stderr)
+        return parse_wiki_structure_xml(text)
+    except Exception as exc:
+        print(f"[deepwiki] direct structure XML unavailable; using deterministic structure: {exc}", file=sys.stderr)
+        return fallback_structure(display_name, file_tree, is_comprehensive)
+
+
+def generate_page_content_direct(repo_path: str, page: dict, model: str, language: str) -> str:
+    source_context = collect_source_context(repo_path, page.get("filePaths", []), max_files=12, max_chars=55_000)
+    file_list = "\n".join(f"- {path}" for path in page.get("filePaths", []))
+    prompt = (
+        "Generate one DeepWiki-style wiki page in Markdown.\n"
+        f"Language: {language}.\n"
+        f"Topic: {page.get('title', page.get('id', 'Wiki Page'))}\n"
+        f"Relevant files:\n{file_list}\n\n"
+        f"Source excerpts:\n<source_context>\n{source_context}\n</source_context>\n\n"
+        "Requirements: concise technical explanation, headings, bullet points, and Mermaid diagram if useful. "
+        "Return only Markdown."
+    )
+    return call_remote_model(prompt, model).strip()
+
+
 def wait_for_health(base_url: str, timeout: int = 300) -> None:
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -78,7 +294,7 @@ def parse_wiki_structure_xml(text: str) -> dict:
     if not match:
         if os.environ.get("DEEPWIKI_DEBUG_RESPONSE") == "true":
             print(f"DeepWiki structure response preview: {response_preview(text)}", file=sys.stderr)
-        raise SystemExit("No <wiki_structure> block found in response")
+        raise ValueError("No <wiki_structure> block found in response")
     xml_text = match.group(0)
     xml_text = re.sub(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]", "", xml_text)
 
@@ -231,34 +447,45 @@ def main() -> int:
     ws_url = args.base_url.replace("http://", "ws://").replace("https://", "wss://") + "/ws/chat"
 
     print("[deepwiki] generating wiki structure")
-    structure = generate_structure(
-        ws_url,
-        repo_url,
-        args.repo_type,
-        display_name,
-        file_tree,
-        args.provider,
-        args.model,
-        args.language,
-        args.token,
-        args.comprehensive,
-    )
+    use_direct_pages = False
+    try:
+        structure = generate_structure(
+            ws_url,
+            repo_url,
+            args.repo_type,
+            display_name,
+            file_tree,
+            args.provider,
+            args.model,
+            args.language,
+            args.token,
+            args.comprehensive,
+        )
+    except Exception as exc:
+        print(f"[deepwiki] DeepWiki WebSocket generation unavailable; using direct remote model fallback: {exc}", file=sys.stderr)
+        structure = generate_structure_direct(args.repo_path, display_name, file_tree, args.model, args.language, args.comprehensive)
+        use_direct_pages = True
     print(f"[deepwiki] generated {len(structure.get('pages', []))} pages")
 
     page_contents: dict[str, str] = {}
     pages_list = structure.get("pages", [])
     for idx, page in enumerate(pages_list, start=1):
         print(f"[deepwiki] generating page {idx}/{len(pages_list)}")
-        content = generate_page_content(
-            ws_url,
-            repo_url,
-            args.repo_type,
-            page,
-            args.provider,
-            args.model,
-            args.language,
-            args.token,
-        )
+        if use_direct_pages:
+            content = generate_page_content_direct(args.repo_path, page, args.model, args.language)
+        else:
+            content = generate_page_content(
+                ws_url,
+                repo_url,
+                args.repo_type,
+                page,
+                args.provider,
+                args.model,
+                args.language,
+                args.token,
+            )
+            if not content.strip() or content.lstrip().startswith("Error:") or "No valid document embeddings" in content:
+                content = generate_page_content_direct(args.repo_path, page, args.model, args.language)
         page_contents[page["id"]] = content
 
     output_dir = Path(args.output_dir)

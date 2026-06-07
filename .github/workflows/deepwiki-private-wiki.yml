@@ -102,98 +102,6 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r .github/scripts/deepwiki-api-requirements.txt
 
-      - name: Configure DeepWiki embedding model
-        shell: bash
-        env:
-          REVIEW_PROXY_KEY: ${{ secrets.REVIEW_PROXY_KEY }}
-          REVIEW_PROXY_URL: ${{ secrets.REVIEW_PROXY_URL }}
-          DEEPWIKI_EMBEDDING_MODEL: ${{ vars.DEEPWIKI_EMBEDDING_MODEL || '' }}
-        run: |
-          set +x
-          set -euo pipefail
-          . .venv/bin/activate
-          python - <<'PY'
-          import json
-          import os
-          import re
-          import sys
-          from pathlib import Path
-
-          import requests
-
-          base_url = os.environ["REVIEW_PROXY_URL"].rstrip("/")
-          if not base_url.endswith("/v1"):
-              base_url = base_url + "/v1"
-          headers = {
-              "Authorization": f"Bearer {os.environ['REVIEW_PROXY_KEY']}",
-              "Content-Type": "application/json",
-          }
-
-          candidates = []
-          preferred = os.environ.get("DEEPWIKI_EMBEDDING_MODEL", "").strip()
-          if preferred:
-              candidates.append(preferred)
-          candidates.extend([
-              "text-embedding-v3",
-              "text-embedding-3-small",
-              "text-embedding-ada-002",
-              "qwen3-embedding-0.6b",
-              "Qwen/Qwen3-Embedding-0.6B",
-          ])
-
-          try:
-              resp = requests.get(f"{base_url}/models", headers=headers, timeout=20)
-              if resp.ok:
-                  for item in resp.json().get("data", []):
-                      model_id = str(item.get("id", ""))
-                      if "embed" in model_id.lower():
-                          candidates.append(model_id)
-          except Exception:
-              pass
-
-          seen = set()
-          candidates = [c for c in candidates if c and not (c in seen or seen.add(c))]
-          attempts = []
-          chosen = None
-          for model in candidates:
-              for request_dimensions in (True, False):
-                  payload = {"model": model, "input": "DeepWiki embedding probe", "encoding_format": "float"}
-                  if request_dimensions:
-                      payload["dimensions"] = 256
-                  try:
-                      resp = requests.post(f"{base_url}/embeddings", headers=headers, json=payload, timeout=45)
-                      if resp.ok:
-                          data = resp.json().get("data", [])
-                          embedding = data[0].get("embedding") if data else None
-                          if isinstance(embedding, list) and embedding:
-                              chosen = (model, request_dimensions, len(embedding))
-                              break
-                      body = re.sub(r"\s+", " ", resp.text)[:160]
-                      attempts.append(f"{model}/dims={request_dimensions}: HTTP {resp.status_code} {body}")
-                  except Exception as exc:
-                      attempts.append(f"{model}/dims={request_dimensions}: {type(exc).__name__}: {exc}")
-              if chosen:
-                  break
-
-          if not chosen:
-              print("No compatible embedding model found.", file=sys.stderr)
-              for line in attempts[:20]:
-                  print(line, file=sys.stderr)
-              raise SystemExit(1)
-
-          model, request_dimensions, actual_dimensions = chosen
-          root = Path(os.environ["RUNNER_TEMP"]) / "deepwiki-open"
-          template = root / "api/config/embedder.openai_compatible.json.bak"
-          cfg = json.loads(template.read_text(encoding="utf-8"))
-          kwargs = {"model": model, "encoding_format": "float"}
-          if request_dimensions:
-              kwargs["dimensions"] = 256
-          cfg["embedder"]["batch_size"] = 10
-          cfg["embedder"]["model_kwargs"] = kwargs
-          (root / "api/config/embedder.json").write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
-          print(f"Embedding model selected: {model}; dimensions={actual_dimensions}; request_dimensions={request_dimensions}")
-          PY
-
       - name: Prepare source folder
         id: source
         shell: bash
@@ -275,6 +183,8 @@ jobs:
       - name: Generate wiki markdown
         shell: bash
         env:
+          OPENAI_API_KEY: ${{ secrets.REVIEW_PROXY_KEY }}
+          OPENAI_BASE_URL: ${{ secrets.REVIEW_PROXY_URL }}
           DEEPWIKI_MODEL: ${{ secrets.ISSUE_SOLVER_MODEL || 'opus' }}
           COMPREHENSIVE: ${{ inputs.comprehensive }}
           TARGET: ${{ inputs.target }}
