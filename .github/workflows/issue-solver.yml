@@ -31,7 +31,7 @@ jobs:
   solve:
     name: Run Issue Solver
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 360
     env:
       SOURCE_REPO: ${{ github.event.client_payload.source_repo || github.event.inputs.source_repo || 'vvvvy531/myproject-source' }}
       MAX_ISSUES: ${{ github.event.client_payload.max_issues || github.event.inputs.max_issues || '100' }}
@@ -71,6 +71,7 @@ jobs:
           ARTIFACT_REPO: ${{ env.ARTIFACT_REPO }}
           SOURCE_REPO: ${{ env.SOURCE_REPO }}
           MAX_ISSUES: ${{ env.MAX_ISSUES }}
+          ISSUE_MERGE_TIMEOUT: '14400'
           GITHUB_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           SCRIPTS_REF: ${{ env.SCRIPTS_REF }}
         run: |
