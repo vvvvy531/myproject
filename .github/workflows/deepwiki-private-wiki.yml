@@ -44,6 +44,8 @@ env:
   DEEPWIKI_BASE_URL: http://127.0.0.1:8001
   DEEPWIKI_PROVIDER: openai
   DEEPWIKI_LANGUAGE: en
+  DEEPWIKI_EMBEDDING_BASE_URL: https://vvvvy001-omniroute.hf.space/v1
+  DEEPWIKI_EMBEDDING_MODEL: voyage/voyage-4-large
 
 jobs:
   generate:
@@ -63,10 +65,11 @@ jobs:
           REVIEW_PROXY_KEY: ${{ secrets.REVIEW_PROXY_KEY }}
           REVIEW_PROXY_URL: ${{ secrets.REVIEW_PROXY_URL }}
           DEEPWIKI_MODEL: ${{ secrets.ISSUE_SOLVER_MODEL || 'opus' }}
+          DEEPWIKI_EMBEDDING_KEY: ${{ secrets.DEEPWIKI_EMBEDDING_KEY || secrets.HF_TOKEN }}
         run: |
           set +x
           set -euo pipefail
-          for name in PRIVATE_SOURCE_PAT REVIEW_PROXY_KEY REVIEW_PROXY_URL DEEPWIKI_MODEL; do
+          for name in PRIVATE_SOURCE_PAT REVIEW_PROXY_KEY REVIEW_PROXY_URL DEEPWIKI_MODEL DEEPWIKI_EMBEDDING_KEY; do
             if [[ -z "${!name:-}" ]]; then
               echo "$name is required" >&2
               exit 1
@@ -101,6 +104,61 @@ jobs:
           . .venv/bin/activate
           python -m pip install --upgrade pip
           python -m pip install -r .github/scripts/deepwiki-api-requirements.txt
+
+      - name: Configure DeepWiki remote embeddings
+        shell: bash
+        env:
+          DEEPWIKI_EMBEDDING_KEY: ${{ secrets.DEEPWIKI_EMBEDDING_KEY || secrets.HF_TOKEN }}
+        run: |
+          set +x
+          set -euo pipefail
+          . .venv/bin/activate
+          python - <<'PY'
+          import json
+          import os
+          import re
+          from pathlib import Path
+
+          import requests
+
+          root = Path(os.environ["RUNNER_TEMP"]) / "deepwiki-open"
+          template = root / "api/config/embedder.openai_compatible.json.bak"
+          out = root / "api/config/embedder.json"
+          base_url = os.environ["DEEPWIKI_EMBEDDING_BASE_URL"].rstrip("/")
+          model = os.environ["DEEPWIKI_EMBEDDING_MODEL"]
+          api_key = os.environ["DEEPWIKI_EMBEDDING_KEY"]
+          headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+
+          selected_kwargs = None
+          for kwargs in (
+              {"model": model, "encoding_format": "float"},
+              {"model": model},
+          ):
+              response = requests.post(
+                  f"{base_url}/embeddings",
+                  headers=headers,
+                  json={**kwargs, "input": "DeepWiki embedding probe"},
+                  timeout=60,
+              )
+              if response.ok:
+                  payload = response.json()
+                  embedding = (payload.get("data") or [{}])[0].get("embedding")
+                  if isinstance(embedding, list) and embedding:
+                      selected_kwargs = kwargs
+                      print(f"Embedding endpoint ok: model={model}; dimensions={len(embedding)}")
+                      break
+              body = re.sub(r"\s+", " ", response.text or "")[:160]
+              print(f"Embedding probe failed: HTTP {response.status_code} {body}", flush=True)
+
+          if selected_kwargs is None:
+              raise SystemExit("Embedding endpoint did not return a valid vector")
+
+          cfg = json.loads(template.read_text(encoding="utf-8"))
+          cfg["embedder"]["initialize_kwargs"] = {"api_key": "${DEEPWIKI_EMBEDDING_KEY}", "base_url": "${DEEPWIKI_EMBEDDING_BASE_URL}"}
+          cfg["embedder"]["batch_size"] = 10
+          cfg["embedder"]["model_kwargs"] = selected_kwargs
+          out.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
+          PY
 
       - name: Prepare source folder
         id: source
@@ -153,6 +211,7 @@ jobs:
         env:
           REVIEW_PROXY_KEY: ${{ secrets.REVIEW_PROXY_KEY }}
           REVIEW_PROXY_URL: ${{ secrets.REVIEW_PROXY_URL }}
+          DEEPWIKI_EMBEDDING_KEY: ${{ secrets.DEEPWIKI_EMBEDDING_KEY || secrets.HF_TOKEN }}
           GOOGLE_API_KEY: dummy
           NODE_ENV: production
           DEEPWIKI_EMBEDDER_TYPE: openai
