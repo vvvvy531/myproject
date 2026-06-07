@@ -145,11 +145,32 @@ jobs:
           echo "repo=$repo" >> "$GITHUB_OUTPUT"
           echo "Prepared source folder for target=$TARGET"
 
+      - name: Start OpenAI-compatible shim
+        shell: bash
+        env:
+          UPSTREAM_OPENAI_API_KEY: ${{ secrets.REVIEW_PROXY_KEY }}
+          UPSTREAM_OPENAI_BASE_URL: ${{ secrets.REVIEW_PROXY_URL }}
+        run: |
+          set +x
+          set -euo pipefail
+          . .venv/bin/activate
+          nohup python .github/scripts/openai_compat_proxy.py --host 127.0.0.1 --port 8787 > "$RUNNER_TEMP/openai-proxy.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/openai-proxy.pid"
+          for i in {1..30}; do
+            if curl -fsS "http://127.0.0.1:8787/v1/health" >/dev/null 2>&1; then
+              echo "OpenAI-compatible shim is healthy."
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "OpenAI-compatible shim failed health check" >&2
+          exit 1
+
       - name: Start DeepWiki API
         shell: bash
         env:
-          OPENAI_API_KEY: ${{ secrets.REVIEW_PROXY_KEY }}
-          OPENAI_BASE_URL: ${{ secrets.REVIEW_PROXY_URL }}
+          OPENAI_API_KEY: local-proxy-key
+          OPENAI_BASE_URL: http://127.0.0.1:8787/v1
           GOOGLE_API_KEY: dummy
           NODE_ENV: production
           DEEPWIKI_EMBEDDER_TYPE: openai
@@ -175,8 +196,8 @@ jobs:
       - name: Generate wiki markdown
         shell: bash
         env:
-          OPENAI_API_KEY: ${{ secrets.REVIEW_PROXY_KEY }}
-          OPENAI_BASE_URL: ${{ secrets.REVIEW_PROXY_URL }}
+          OPENAI_API_KEY: local-proxy-key
+          OPENAI_BASE_URL: http://127.0.0.1:8787/v1
           DEEPWIKI_MODEL: ${{ secrets.REVIEW_MODEL }}
           COMPREHENSIVE: ${{ inputs.comprehensive }}
         run: |
@@ -248,7 +269,10 @@ jobs:
           if [[ -f "$RUNNER_TEMP/deepwiki-api.pid" ]]; then
             kill "$(cat "$RUNNER_TEMP/deepwiki-api.pid")" 2>/dev/null || true
           fi
-          rm -rf "$RUNNER_TEMP/deepwiki-output" "$RUNNER_TEMP/deepwiki-smoke-source" "$RUNNER_TEMP/private-source" "$RUNNER_TEMP/private-output" "$RUNNER_TEMP/deepwiki-api.log" ~/.adalflow deepwiki-open .venv
+          if [[ -f "$RUNNER_TEMP/openai-proxy.pid" ]]; then
+            kill "$(cat "$RUNNER_TEMP/openai-proxy.pid")" 2>/dev/null || true
+          fi
+          rm -rf "$RUNNER_TEMP/deepwiki-output" "$RUNNER_TEMP/deepwiki-smoke-source" "$RUNNER_TEMP/private-source" "$RUNNER_TEMP/private-output" "$RUNNER_TEMP/deepwiki-api.log" "$RUNNER_TEMP/openai-proxy.log" ~/.adalflow deepwiki-open .venv
 
       - name: Delete public run logs
         if: always()
