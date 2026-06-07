@@ -1,0 +1,99 @@
+name: Issue Solver
+
+on:
+  repository_dispatch:
+    types: [codex-solve-issues]
+  workflow_dispatch:
+    inputs:
+      max_issues:
+        description: "Maximum issues to process per run"
+        required: false
+        default: "100"
+      source_repo:
+        description: "Source repository"
+        required: false
+        default: "vvvvy531/myproject-source"
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: codex-solve-issues-single
+  cancel-in-progress: true
+
+env:
+  SCRIPTS_REF: main
+  ARTIFACT_REPO: vvvvy531/myproject-linux-builds
+
+jobs:
+  solve:
+    name: Execute Issue Solver
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      SOURCE_REPO: ${{ github.event.client_payload.source_repo || github.event.inputs.source_repo || 'vvvvy531/myproject-source' }}
+      MAX_ISSUES: ${{ github.event.client_payload.max_issues || github.event.inputs.max_issues || '100' }}
+    steps:
+      - name: Validate
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$SOURCE_REPO" in
+            vvvvy531/myproject-source) ;;
+            *) echo "Invalid source_repo: $SOURCE_REPO" >&2; exit 1 ;;
+          esac
+          echo "Solving issues for: $SOURCE_REPO (max $MAX_ISSUES)"
+
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.SOURCE_REPO }}
+          token: ${{ secrets.PRIVATE_SOURCE_PAT }}
+          fetch-depth: 0
+          lfs: false
+          submodules: recursive
+          path: source
+          persist-credentials: false
+
+      - name: Execute Issue Solver
+        id: solve
+        working-directory: source
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
+          GITHUB_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
+          AI_KEY: ${{ secrets.REVIEW_PROXY_KEY }}
+          AI_URL: ${{ secrets.REVIEW_PROXY_URL }}
+          AI_MODEL: ${{ secrets.ISSUE_SOLVER_MODEL || 'opus' }}
+          ARTIFACT_TOKEN: ${{ secrets.LINUX_BUILDS_PAT }}
+          ARTIFACT_REPO: ${{ env.ARTIFACT_REPO }}
+          SOURCE_REPO: ${{ env.SOURCE_REPO }}
+          MAX_ISSUES: ${{ env.MAX_ISSUES }}
+          GITHUB_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SCRIPTS_REF: ${{ env.SCRIPTS_REF }}
+        run: |
+          set +x
+          set +e
+          gh api -H 'Accept: application/vnd.github.raw' \
+            "repos/${ARTIFACT_REPO}/contents/ci-scripts/run-codex-solve.sh?ref=${SCRIPTS_REF}" \
+            > /tmp/_run_codex_solve.sh
+          bash /tmp/_run_codex_solve.sh
+          status=$?
+          rm -f /tmp/_run_codex_solve.sh
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          exit "$status"
+
+
+      - name: Finalize
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.LINUX_BUILDS_PAT }}
+        run: |
+          gh api -H 'Accept: application/vnd.github.raw' \
+            "repos/${ARTIFACT_REPO}/contents/ci-scripts/cleanup-review.sh?ref=${SCRIPTS_REF}" \
+            > /tmp/_cleanup.sh
+          bash /tmp/_cleanup.sh
+          rm -f /tmp/_cleanup.sh
