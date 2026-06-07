@@ -198,7 +198,9 @@ jobs:
         env:
           OPENAI_API_KEY: local-proxy-key
           OPENAI_BASE_URL: http://127.0.0.1:8787/v1
-          DEEPWIKI_MODEL: ${{ secrets.REVIEW_MODEL }}
+          DEEPWIKI_MODEL: ${{ secrets.REVIEW_MODEL }}
+
+
           COMPREHENSIVE: ${{ inputs.comprehensive }}
         run: |
           set +x
@@ -237,6 +239,7 @@ jobs:
           out="$RUNNER_TEMP/deepwiki-output"
           work="$RUNNER_TEMP/private-output"
           gh repo clone "$PRIVATE_SOURCE_REPO" "$work" -- --depth 1
+          git -C "$work" remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${PRIVATE_SOURCE_REPO}.git"
           git -C "$work" config user.name "github-actions[bot]"
           git -C "$work" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git -C "$work" checkout -B "$BRANCH"
