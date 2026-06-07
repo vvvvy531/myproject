@@ -537,9 +537,9 @@ jobs:
             echo
             echo "Full main-branch semantic scan. One folder is considered complete only after findings are published as an issue; folders with no findings publish nothing."
             echo
-            echo "```json"
+            echo '```json'
             echo "{\"total_chunks\":\"${{ steps.range.outputs.total_chunks }}\",\"reviewed\":\"${REVIEWED}\",\"finding_chunks\":\"${FINDING_CHUNKS}\",\"issues_published\":\"${ISSUE_COUNT}\",\"failed\":\"${REVIEW_FAILED}\",\"review_folder\":\"${REVIEW_FOLDER:-}\",\"head_sha\":\"${{ steps.range.outputs.head_sha }}\",\"base_sha\":\"${{ steps.range.outputs.base_sha }}\",\"commit_count\":\"${{ steps.range.outputs.commit_count }}\",\"model\":\"${AI_MODEL:-unknown}\",\"run_id\":\"${GITHUB_RUN_ID}\",\"updated_at\":\"$(date -u +%FT%TZ)\"}"
-            echo "```"
+            echo '```'
           } > "$body_file"
           issue="$(gh issue list -R "$GITHUB_REPOSITORY" --state all --search "$SUMMARY_TITLE in:title" --json number,title --jq '.[] | select(.title == env.SUMMARY_TITLE) | .number' | head -n 1)"
           if [[ -z "$issue" ]]; then
@@ -560,3 +560,4 @@ jobs:
             > /tmp/_cleanup.sh
           bash /tmp/_cleanup.sh
           rm -f /tmp/_cleanup.sh
+
