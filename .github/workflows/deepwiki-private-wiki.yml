@@ -257,7 +257,8 @@ jobs:
             git -C "$work" commit -m "Update DeepWiki private wiki" >/dev/null
             git -C "$work" push origin "HEAD:$BRANCH" --force-with-lease >/dev/null
           fi
-          if gh pr view "$BRANCH" --repo "$PRIVATE_SOURCE_REPO" >/dev/null 2>&1; then
+          existing_pr="$(gh pr list --repo "$PRIVATE_SOURCE_REPO" --head "$BRANCH" --state open --json number --jq '.[0].number // empty')"
+          if [[ -n "$existing_pr" ]]; then
             echo "Private source PR already exists for $BRANCH."
           else
             gh pr create \
