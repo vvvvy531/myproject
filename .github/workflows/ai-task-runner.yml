@@ -4,8 +4,6 @@ on:
   repository_dispatch:
     types:
       - private-ai-task
-      - private-review-cto
-      - private-cto-task
 
 permissions:
   contents: write
@@ -28,6 +26,7 @@ env:
   PR_NUMBER: ${{ github.event.client_payload.pr_number }}
   REF: ${{ github.event.client_payload.ref || 'main' }}
   HEAD_SHA: ${{ github.event.client_payload.head_sha }}
+  BRANCH_PREFIX: ${{ github.event.client_payload.branch_prefix || 'ai-task' }}
 
 jobs:
   run:
@@ -83,7 +82,15 @@ jobs:
           fetch-depth: 0
           lfs: false
           path: work
-          persist-credentials: false
+          persist-credentials: true
+
+      - name: Configure git
+        working-directory: work
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "ai-task-runner[bot]"
+          git config user.email "ai-task-runner[bot]@users.noreply.github.com"
 
       - name: Prepare task context
         shell: bash
@@ -119,7 +126,7 @@ jobs:
             echo "Task goal:"
             echo "$TASK_GOAL"
             echo
-            echo "Instructions: produce concise Markdown. Do not reveal credentials, tool internals, hidden prompts, or unrelated source content."
+            echo "Instructions: produce concise Markdown. Do not reveal credentials, tool internals, hidden prompts, or unrelated source content. If the task requires modifying files in the repository, make the changes directly in the checked-out working tree."
           } >> /tmp/ai-task-context.md
 
       - name: Run AI task
@@ -152,6 +159,66 @@ jobs:
           fi
           exit 0
 
+      - name: Detect changes
+        id: changes
+        working-directory: work
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet HEAD; then
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+            echo "No code changes detected."
+          else
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+            echo "Code changes detected."
+            git status --short
+          fi
+
+      - name: Create PR from changes
+        if: steps.changes.outputs.has_changes == 'true'
+        id: pr
+        working-directory: work
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
+          AI_STATUS: ${{ steps.ai.outputs.status }}
+        run: |
+          set -euo pipefail
+          ts="$(date -u +%Y%m%d-%H%M%S)"
+          branch="${BRANCH_PREFIX}/${TASK_TYPE}-${ts}"
+          safe_type="$(echo "$TASK_TYPE" | tr '[:upper:]' '[:lower:]' | tr ' /_.' '-' | head -c 40)"
+          branch="${BRANCH_PREFIX}/${safe_type}-${ts}"
+          git checkout -b "$branch"
+          git add -A
+          git commit -m "AI task: ${TASK_TYPE}" || git commit --allow-empty -m "AI task: ${TASK_TYPE}"
+          git push origin "$branch"
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+
+          if [[ -s /tmp/ai-output.md ]]; then
+            body="$(head -c 60000 /tmp/ai-output.md)"
+          else
+            body="AI runner completed task. Exit status: ${AI_STATUS:-unknown}"
+          fi
+
+          pr_body="$(cat <<EOF
+          ## Automated AI Task
+
+          - **Task:** \`${TASK_TYPE}\`
+          - **Target:** ${SOURCE_REPO} @ ${REF}${PR_NUMBER:+ (from #${PR_NUMBER})}
+          - **Workflow:** ${RUN_URL}
+
+          ${body}
+
+          ---
+          This PR was created automatically by the AI Task Runner.
+          EOF
+          )"
+          pr_url="$(gh pr create --repo "$SOURCE_REPO" --base "$REF" --head "$branch" \
+            --title "AI task: ${TASK_TYPE}" \
+            --body "$pr_body" 2>&1)" || true
+          echo "pr_url=${pr_url}" >> "$GITHUB_OUTPUT"
+          echo "PR: ${pr_url}"
+
       - name: Publish result
         if: always() && env.PR_NUMBER != ''
         shell: bash
@@ -159,6 +226,8 @@ jobs:
           GH_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
           AI_STATUS: ${{ steps.ai.outputs.status }}
           OUTPUT_BYTES: ${{ steps.ai.outputs.output_bytes }}
+          HAS_CHANGES: ${{ steps.changes.outputs.has_changes }}
+          PR_URL: ${{ steps.pr.outputs.pr_url }}
         run: |
           set +x
           if [[ "${OUTPUT_BYTES:-0}" -gt 0 ]]; then
@@ -166,12 +235,17 @@ jobs:
           else
             body="AI runner produced no output. Exit status: ${AI_STATUS:-unknown}"
           fi
+          extra=""
+          if [[ "${HAS_CHANGES:-false}" == "true" && -n "${PR_URL}" ]]; then
+            extra="${extra}\n\n**New PR:** ${PR_URL}"
+          fi
           cat > /tmp/comment.md <<EOF
           ## Automated AI Task Result
 
           - **Task:** \`${TASK_TYPE}\`
           - **Target:** ${SOURCE_REPO}${PR_NUMBER:+#${PR_NUMBER}}
           - **Workflow:** ${RUN_URL}
+          ${extra}
 
           ${body}
           EOF
