@@ -70,6 +70,9 @@ def send_websocket_request(ws_url: str, payload: dict) -> str:
 def parse_wiki_structure_xml(text: str) -> dict:
     match = re.search(r"<wiki_structure>[\s\S]*?</wiki_structure>", text)
     if not match:
+        preview = text[:4000].replace(os.environ.get("OPENAI_API_KEY", ""), "***")
+        print("No <wiki_structure> block found in response. Response preview:", file=sys.stderr)
+        print(preview, file=sys.stderr)
         raise SystemExit("No <wiki_structure> block found in response")
     xml_text = match.group(0)
     xml_text = re.sub(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]", "", xml_text)
