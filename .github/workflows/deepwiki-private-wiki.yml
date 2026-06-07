@@ -244,7 +244,7 @@ jobs:
           git -C "$work" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           if git -C "$work" ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then
             git -C "$work" fetch origin "$BRANCH" >/dev/null 2>&1
-            git -C "$work" checkout -B "$BRANCH" "origin/$BRANCH"
+            git -C "$work" checkout -B "$BRANCH" FETCH_HEAD
           else
             git -C "$work" checkout -B "$BRANCH"
           fi
