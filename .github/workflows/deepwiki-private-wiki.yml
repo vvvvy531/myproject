@@ -32,7 +32,6 @@ on:
 
 permissions:
   contents: read
-  actions: write
 
 concurrency:
   group: deepwiki-private-wiki-${{ github.event.inputs.target }}
@@ -63,30 +62,40 @@ jobs:
           PRIVATE_SOURCE_PAT: ${{ secrets.PRIVATE_SOURCE_PAT }}
           REVIEW_PROXY_KEY: ${{ secrets.REVIEW_PROXY_KEY }}
           REVIEW_PROXY_URL: ${{ secrets.REVIEW_PROXY_URL }}
-          REVIEW_MODEL: ${{ secrets.REVIEW_MODEL }}
+          DEEPWIKI_MODEL: ${{ secrets.ISSUE_SOLVER_MODEL || 'opus' }}
         run: |
           set +x
           set -euo pipefail
-          for name in PRIVATE_SOURCE_PAT REVIEW_PROXY_KEY REVIEW_PROXY_URL REVIEW_MODEL; do
+          for name in PRIVATE_SOURCE_PAT REVIEW_PROXY_KEY REVIEW_PROXY_URL DEEPWIKI_MODEL; do
             if [[ -z "${!name:-}" ]]; then
               echo "$name is required" >&2
               exit 1
             fi
           done
-          echo "Required secrets are present."
+          echo "Required secrets/config are present."
 
       - name: Checkout DeepWiki Open
         shell: bash
         run: |
           set +x
           set -euo pipefail
-          git clone --depth 1 --branch "$DEEPWIKI_OPEN_REF" "$DEEPWIKI_OPEN_REPO" deepwiki-open
+          dw="$RUNNER_TEMP/deepwiki-open"
+          git clone --depth 1 --branch "$DEEPWIKI_OPEN_REF" "$DEEPWIKI_OPEN_REPO" "$dw"
           python3 - <<'PY'
+          import json
+          import os
           from pathlib import Path
-          p = Path('deepwiki-open/api/api.py')
-          s = p.read_text(encoding='utf-8')
-          s = s.replace('app.add_websocket_route("/ws/chat", handle_websocket_chat)', 'app.add_api_websocket_route("/ws/chat", handle_websocket_chat)')
-          p.write_text(s, encoding='utf-8')
+
+          root = Path(os.environ["RUNNER_TEMP"]) / "deepwiki-open"
+          api = root / "api/api.py"
+          text = api.read_text(encoding="utf-8")
+          text = text.replace('app.add_websocket_route("/ws/chat", handle_websocket_chat)', 'app.add_api_websocket_route("/ws/chat", handle_websocket_chat)')
+          api.write_text(text, encoding="utf-8")
+
+          embedder = root / "api/config/embedder.openai_compatible.json.bak"
+          cfg = json.loads(embedder.read_text(encoding="utf-8"))
+          cfg["embedder"]["model_kwargs"]["model"] = "text-embedding-v3"
+          (root / "api/config/embedder.json").write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
           PY
 
       - name: Install DeepWiki backend dependencies
@@ -104,7 +113,7 @@ jobs:
         shell: bash
         env:
           TARGET: ${{ inputs.target }}
-          PRIVATE_SOURCE_PAT: ${{ secrets.PRIVATE_SOURCE_PAT }}
+          GH_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
         run: |
           set +x
           set -euo pipefail
@@ -145,41 +154,26 @@ jobs:
           echo "repo=$repo" >> "$GITHUB_OUTPUT"
           echo "Prepared source folder for target=$TARGET"
 
-      - name: Start OpenAI-compatible shim
-        shell: bash
-        env:
-          UPSTREAM_OPENAI_API_KEY: ${{ secrets.REVIEW_PROXY_KEY }}
-          UPSTREAM_OPENAI_BASE_URL: ${{ secrets.REVIEW_PROXY_URL }}
-        run: |
-          set +x
-          set -euo pipefail
-          . .venv/bin/activate
-          nohup python .github/scripts/openai_compat_proxy.py --host 127.0.0.1 --port 8787 > "$RUNNER_TEMP/openai-proxy.log" 2>&1 &
-          echo $! > "$RUNNER_TEMP/openai-proxy.pid"
-          for i in {1..30}; do
-            if curl -fsS "http://127.0.0.1:8787/v1/health" >/dev/null 2>&1; then
-              echo "OpenAI-compatible shim is healthy."
-              exit 0
-            fi
-            sleep 1
-          done
-          echo "OpenAI-compatible shim failed health check" >&2
-          exit 1
-
       - name: Start DeepWiki API
         shell: bash
         env:
-          OPENAI_API_KEY: local-proxy-key
-          OPENAI_BASE_URL: http://127.0.0.1:8787/v1
+          REVIEW_PROXY_KEY: ${{ secrets.REVIEW_PROXY_KEY }}
+          REVIEW_PROXY_URL: ${{ secrets.REVIEW_PROXY_URL }}
           GOOGLE_API_KEY: dummy
           NODE_ENV: production
           DEEPWIKI_EMBEDDER_TYPE: openai
-          PYTHONPATH: ${{ github.workspace }}/deepwiki-open
           PORT: "8001"
         run: |
           set +x
           set -euo pipefail
           . .venv/bin/activate
+          base_url="$REVIEW_PROXY_URL"
+          if [[ "$base_url" != */v1 ]]; then
+            base_url="${base_url%/}/v1"
+          fi
+          export OPENAI_API_KEY="$REVIEW_PROXY_KEY"
+          export OPENAI_BASE_URL="$base_url"
+          export PYTHONPATH="$RUNNER_TEMP/deepwiki-open"
           nohup python -m api.main > "$RUNNER_TEMP/deepwiki-api.log" 2>&1 &
           echo $! > "$RUNNER_TEMP/deepwiki-api.pid"
           for i in {1..90}; do
@@ -190,17 +184,12 @@ jobs:
             sleep 2
           done
           echo "DeepWiki API failed health check" >&2
-          tail -n 80 "$RUNNER_TEMP/deepwiki-api.log" >&2 || true
           exit 1
 
       - name: Generate wiki markdown
         shell: bash
         env:
-          OPENAI_API_KEY: local-proxy-key
-          OPENAI_BASE_URL: http://127.0.0.1:8787/v1
-          DEEPWIKI_MODEL: ${{ secrets.REVIEW_MODEL }}
-
-
+          DEEPWIKI_MODEL: ${{ secrets.ISSUE_SOLVER_MODEL || 'opus' }}
           COMPREHENSIVE: ${{ inputs.comprehensive }}
         run: |
           set +x
@@ -278,16 +267,4 @@ jobs:
           if [[ -f "$RUNNER_TEMP/deepwiki-api.pid" ]]; then
             kill "$(cat "$RUNNER_TEMP/deepwiki-api.pid")" 2>/dev/null || true
           fi
-          if [[ -f "$RUNNER_TEMP/openai-proxy.pid" ]]; then
-            kill "$(cat "$RUNNER_TEMP/openai-proxy.pid")" 2>/dev/null || true
-          fi
-          rm -rf "$RUNNER_TEMP/deepwiki-output" "$RUNNER_TEMP/deepwiki-smoke-source" "$RUNNER_TEMP/private-source" "$RUNNER_TEMP/private-output" "$RUNNER_TEMP/deepwiki-api.log" "$RUNNER_TEMP/openai-proxy.log" ~/.adalflow deepwiki-open .venv
-
-      - name: Delete public run logs
-        if: always()
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set +x
-          gh api --method DELETE "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/logs" >/dev/null 2>&1 || true
+          rm -rf "$RUNNER_TEMP/deepwiki-output" "$RUNNER_TEMP/deepwiki-smoke-source" "$RUNNER_TEMP/private-source" "$RUNNER_TEMP/private-output" "$RUNNER_TEMP/deepwiki-api.log" "$RUNNER_TEMP/deepwiki-open" ~/.adalflow .venv
