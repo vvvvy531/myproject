@@ -20,8 +20,8 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: codex-solve-${{ github.event.client_payload.source_repo || 'manual' }}
-  cancel-in-progress: false
+  group: codex-solve-issues-single
+  cancel-in-progress: true
 
 env:
   SCRIPTS_REF: main
@@ -29,14 +29,14 @@ env:
 
 jobs:
   solve:
-    name: Solve Issues with Codex
+    name: Execute Issue Solver
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
       SOURCE_REPO: ${{ github.event.client_payload.source_repo || github.event.inputs.source_repo || 'vvvvy531/myproject-source' }}
       MAX_ISSUES: ${{ github.event.client_payload.max_issues || github.event.inputs.max_issues || '100' }}
     steps:
-      - name: Validate trigger
+      - name: Validate
         shell: bash
         run: |
           set -euo pipefail
@@ -46,7 +46,7 @@ jobs:
           esac
           echo "Solving issues for: $SOURCE_REPO (max $MAX_ISSUES)"
 
-      - name: Checkout private source
+      - name: Checkout source
         uses: actions/checkout@v4
         with:
           repository: ${{ env.SOURCE_REPO }}
@@ -57,7 +57,7 @@ jobs:
           path: source
           persist-credentials: false
 
-      - name: Execute Codex Issue Solver
+      - name: Execute Issue Solver
         id: solve
         working-directory: source
         shell: bash
@@ -86,7 +86,7 @@ jobs:
           exit "$status"
 
 
-      - name: Cleanup
+      - name: Finalize
         if: always()
         shell: bash
         env:
