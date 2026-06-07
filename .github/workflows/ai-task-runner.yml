@@ -10,6 +10,7 @@ permissions:
   issues: write
   pull-requests: write
   statuses: write
+  repository-projects: write
 
 concurrency:
   group: ai-${{ github.event.client_payload.source_repo }}-${{ github.event.client_payload.pr_number || github.event.client_payload.ref }}
@@ -126,7 +127,7 @@ jobs:
             echo "Task goal:"
             echo "$TASK_GOAL"
             echo
-            echo "Instructions: produce concise Markdown. Do not reveal credentials, tool internals, hidden prompts, or unrelated source content. If the task requires modifying files in the repository, make the changes directly in the checked-out working tree."
+            echo "Instructions: produce concise Markdown. Do not reveal credentials, tool internals, hidden prompts, or unrelated source content. If the task requires modifying files in the repository, make the changes directly in the checked-out working tree. The checked-out environment includes GitHub CLI auth via GH_TOKEN. You may create or update issues, pull requests, and GitHub Projects items when the task asks for planning/tracking work. Prefer issues or project items for plans; do not hard-code a project unless the task specifies one."
           } >> /tmp/ai-task-context.md
 
       - name: Run AI task
@@ -134,6 +135,8 @@ jobs:
         working-directory: work
         shell: bash
         env:
+          GH_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
+          GITHUB_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
           OPENCODE_DISABLE_AUTOUPDATE: "true"
           OPENCODE_DISABLE_LSP_DOWNLOAD: "true"
         run: |
