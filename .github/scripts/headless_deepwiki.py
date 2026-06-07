@@ -66,6 +66,37 @@ def extract_text_from_response(payload: dict) -> str:
     return "\n".join(t for t in texts if t).strip()
 
 
+def extract_text_from_http_response(response: requests.Response) -> str:
+    raw = response.text or ""
+    try:
+        return extract_text_from_response(response.json())
+    except Exception:
+        pass
+
+    texts: list[str] = []
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line.startswith("data:"):
+            continue
+        data = line[5:].strip()
+        if not data or data == "[DONE]":
+            continue
+        try:
+            text = extract_text_from_response(json.loads(data))
+            if text:
+                texts.append(text)
+        except Exception:
+            if data and not data.startswith("{"):
+                texts.append(data)
+    if texts:
+        return "\n".join(texts).strip()
+
+    clean = raw.strip()
+    if clean and not clean.lower().startswith(("<html", "<!doctype html")):
+        return clean
+    return ""
+
+
 def call_remote_model(prompt: str, model: str, timeout: int = 180) -> str:
     api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("REVIEW_PROXY_KEY")
     if not api_key:
@@ -73,35 +104,26 @@ def call_remote_model(prompt: str, model: str, timeout: int = 180) -> str:
     base_url = normalize_openai_base_url()
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     attempts: list[str] = []
-
-    response_payload = {"model": model, "input": prompt}
-    try:
-        response = requests.post(f"{base_url}/responses", headers=headers, json=response_payload, timeout=timeout)
-        if response.ok:
-            text = extract_text_from_response(response.json())
-            if text:
-                return text
-            attempts.append("/responses returned no text")
-        else:
-            attempts.append(f"/responses HTTP {response.status_code}: {response.text[:240]}")
-    except Exception as exc:
-        attempts.append(f"/responses {type(exc).__name__}: {exc}")
-
-    chat_payload = {"model": model, "messages": [{"role": "user", "content": prompt}], "temperature": 0.2}
-    try:
-        response = requests.post(f"{base_url}/chat/completions", headers=headers, json=chat_payload, timeout=timeout)
-        if response.ok:
-            text = extract_text_from_response(response.json())
-            if text:
-                return text
-            attempts.append("/chat/completions returned no text")
-        else:
-            attempts.append(f"/chat/completions HTTP {response.status_code}: {response.text[:240]}")
-    except Exception as exc:
-        attempts.append(f"/chat/completions {type(exc).__name__}: {exc}")
-
-    raise RuntimeError("Remote model request failed: " + " | ".join(attempts))
-
+    endpoints = [
+        ("/responses", {"model": model, "input": prompt, "stream": False}),
+        ("/chat/completions", {"model": model, "messages": [{"role": "user", "content": prompt}], "temperature": 0.2, "stream": False}),
+    ]
+    for attempt in range(1, 4):
+        for endpoint, payload in endpoints:
+            try:
+                response = requests.post(f"{base_url}{endpoint}", headers=headers, json=payload, timeout=timeout)
+                if response.ok:
+                    text = extract_text_from_http_response(response)
+                    if text:
+                        return text
+                    attempts.append(f"{endpoint} attempt={attempt} HTTP {response.status_code} empty/non-text body len={len(response.text or '')}")
+                else:
+                    body = re.sub(r"\s+", " ", response.text or "")[:240]
+                    attempts.append(f"{endpoint} attempt={attempt} HTTP {response.status_code}: {body}")
+            except Exception as exc:
+                attempts.append(f"{endpoint} attempt={attempt} {type(exc).__name__}: {exc}")
+        time.sleep(2 * attempt)
+    raise RuntimeError("Remote model request failed: " + " | ".join(attempts[-8:]))
 
 def should_include_file(path: Path) -> bool:
     if any(part in EXCLUDED_PARTS for part in path.parts):
@@ -217,8 +239,22 @@ def generate_structure_direct(repo_path: str, display_name: str, file_tree: str,
         return fallback_structure(display_name, file_tree, is_comprehensive)
 
 
+def fallback_page_content(page: dict) -> str:
+    title = page.get("title") or page.get("id") or "Wiki Page"
+    file_paths = page.get("filePaths", [])
+    files = "\n".join(f"- `{path}`" for path in file_paths) or "- No specific files selected."
+    return (
+        f"# {title}\n\n"
+        "This page was generated as a safe fallback because the remote model response was unavailable for this page.\n\n"
+        "## Relevant Files\n\n"
+        f"{files}\n\n"
+        "## Notes\n\n"
+        "Review the listed files in the private repository for implementation details.\n"
+    )
+
+
 def generate_page_content_direct(repo_path: str, page: dict, model: str, language: str) -> str:
-    source_context = collect_source_context(repo_path, page.get("filePaths", []), max_files=12, max_chars=55_000)
+    source_context = collect_source_context(repo_path, page.get("filePaths", []), max_files=12, max_chars=45_000)
     file_list = "\n".join(f"- {path}" for path in page.get("filePaths", []))
     prompt = (
         "Generate one DeepWiki-style wiki page in Markdown.\n"
@@ -229,8 +265,12 @@ def generate_page_content_direct(repo_path: str, page: dict, model: str, languag
         "Requirements: concise technical explanation, headings, bullet points, and Mermaid diagram if useful. "
         "Return only Markdown."
     )
-    return call_remote_model(prompt, model).strip()
-
+    try:
+        text = call_remote_model(prompt, model).strip()
+        return text or fallback_page_content(page)
+    except Exception as exc:
+        print(f"[deepwiki] direct page fallback used for {page.get('id', 'page')}: {exc}", file=sys.stderr)
+        return fallback_page_content(page)
 
 def wait_for_health(base_url: str, timeout: int = 300) -> None:
     deadline = time.time() + timeout
