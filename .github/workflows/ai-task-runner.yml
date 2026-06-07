@@ -147,6 +147,7 @@ jobs:
             --model "cto/${AI_MODEL}" \
             --format default \
             --dangerously-skip-permissions \
+            --dir "$PWD" \
             "${flags[@]}" \
             "$(cat /tmp/ai-task-context.md)" \
             > /tmp/ai-output.md 2> /tmp/ai-err.log
