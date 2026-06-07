@@ -85,13 +85,6 @@ jobs:
           echo "status=$status" >> "$GITHUB_OUTPUT"
           exit "$status"
 
-      - name: Upload solve summary
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: codex-solve-report-${{ github.run_number }}
-          path: source/codex-solve-summary.md
-          if-no-files-found: ignore
 
       - name: Cleanup
         if: always()
