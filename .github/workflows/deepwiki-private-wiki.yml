@@ -51,7 +51,7 @@ jobs:
   generate:
     name: Generate private DeepWiki
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 360
     steps:
       - name: Checkout public workflow repo
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5

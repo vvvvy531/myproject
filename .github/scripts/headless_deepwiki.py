@@ -234,12 +234,12 @@ def ensure_minimum_pages(structure: dict, file_tree: str, display_name: str, is_
 
 
 def generate_structure_direct(repo_path: str, display_name: str, file_tree: str, model: str, language: str, is_comprehensive: bool) -> dict:
-    page_count = "12-16" if is_comprehensive else "4-6"
+    page_count = "as many pages as needed; no maximum page count" if is_comprehensive else "4-6"
     source_context = collect_source_context(repo_path, max_files=32, max_chars=90_000)
     prompt = (
         f"Create a DeepWiki-style wiki structure for repository {display_name}.\n"
         f"Language: {language}.\n"
-        f"Create {page_count} pages. Use stable page ids such as overview, architecture, workflow.\n\n"
+        f"Create {page_count}. In comprehensive mode, do not cap the number of pages; include every major system, module, plugin, configuration area, runtime flow, data flow, asset/content area, build/CI area, and workflow that warrants a page. Use stable page ids such as overview, architecture, workflow.\n\n"
         f"File tree:\n<file_tree>\n{file_tree}\n</file_tree>\n\n"
         f"Source excerpts:\n<source_context>\n{source_context}\n</source_context>\n\n"
         "Return ONLY this XML, no markdown fences:\n"
@@ -409,12 +409,12 @@ def generate_structure(
     token: str,
     is_comprehensive: bool,
 ) -> dict:
-    page_count = "12-16" if is_comprehensive else "4-6"
+    page_count = "as many pages as needed; no maximum page count" if is_comprehensive else "4-6"
     prompt = (
         f"Analyze this repository {display_name} and create a wiki structure for it.\n\n"
         f"Complete file tree:\n<file_tree>\n{file_tree}\n</file_tree>\n\n"
-        f"Create {page_count} pages covering project overview, architecture, key features, "
-        f"configuration, development workflow, and critical modules.\n\n"
+        f"Create {page_count} covering project overview, architecture, key features, "
+        f"configuration, development workflow, critical modules, plugins, content/assets, runtime flows, data flows, build/CI, and every major subsystem that warrants its own page. In comprehensive mode, do not cap the number of pages.\n\n"
         "Return ONLY this XML format, no markdown fences, no explanation:\n"
         "<wiki_structure>\n"
         "  <title>...</title>\n"
