@@ -64,7 +64,7 @@ jobs:
           PRIVATE_SOURCE_PAT: ${{ secrets.PRIVATE_SOURCE_PAT }}
           REVIEW_PROXY_KEY: ${{ secrets.REVIEW_PROXY_KEY }}
           REVIEW_PROXY_URL: ${{ secrets.REVIEW_PROXY_URL }}
-          DEEPWIKI_MODEL: ${{ secrets.ISSUE_SOLVER_MODEL || 'opus' }}
+          DEEPWIKI_MODEL: opus
           DEEPWIKI_EMBEDDING_KEY: ${{ secrets.DEEPWIKI_EMBEDDING_KEY || secrets.HF_TOKEN }}
         run: |
           set +x
@@ -244,7 +244,7 @@ jobs:
         env:
           OPENAI_API_KEY: ${{ secrets.REVIEW_PROXY_KEY }}
           OPENAI_BASE_URL: ${{ secrets.REVIEW_PROXY_URL }}
-          DEEPWIKI_MODEL: ${{ secrets.ISSUE_SOLVER_MODEL || 'opus' }}
+          DEEPWIKI_MODEL: opus
           COMPREHENSIVE: ${{ inputs.comprehensive }}
           TARGET: ${{ inputs.target }}
         run: |

@@ -190,6 +190,14 @@ def fallback_structure(display_name: str, file_tree: str, is_comprehensive: bool
         page_defs.extend([
             ("key-modules", "Key Modules", paths[4:20] or paths[:10]),
             ("runtime-behavior", "Runtime Behavior", paths[6:22] or paths[:10]),
+            ("source-layout", "Source Layout", paths[:20]),
+            ("content-and-assets", "Content and Assets", [p for p in paths if p.startswith("Content/")][:16] or paths[:10]),
+            ("plugins", "Plugins", [p for p in paths if p.startswith("Plugins/")][:16] or paths[:10]),
+            ("build-and-ci", "Build and CI", [p for p in paths if p.startswith(("Build/", "ci/", ".github/"))][:16] or paths[:10]),
+            ("configuration-deep-dive", "Configuration Deep Dive", [p for p in paths if Path(p).suffix.lower() in {".ini", ".json", ".uproject", ".uplugin", ".target"}][:18] or paths[:10]),
+            ("data-flow", "Data Flow", paths[10:28] or paths[:12]),
+            ("extension-points", "Extension Points", paths[12:32] or paths[:12]),
+            ("testing-validation", "Testing and Validation", [p for p in paths if "test" in p.lower() or "ci" in p.lower()][:16] or paths[:10]),
         ])
     return {
         "title": f"{display_name} Wiki",
@@ -208,8 +216,25 @@ def fallback_structure(display_name: str, file_tree: str, is_comprehensive: bool
     }
 
 
+def ensure_minimum_pages(structure: dict, file_tree: str, display_name: str, is_comprehensive: bool) -> dict:
+    if not is_comprehensive:
+        return structure
+    pages = structure.setdefault("pages", [])
+    if len(pages) >= 12:
+        return structure
+    existing = {page.get("id") for page in pages}
+    fallback_pages = fallback_structure(display_name, file_tree, True)["pages"]
+    for page in fallback_pages:
+        if page.get("id") not in existing:
+            pages.append(page)
+            existing.add(page.get("id"))
+        if len(pages) >= 12:
+            break
+    return structure
+
+
 def generate_structure_direct(repo_path: str, display_name: str, file_tree: str, model: str, language: str, is_comprehensive: bool) -> dict:
-    page_count = "8-12" if is_comprehensive else "4-6"
+    page_count = "12-16" if is_comprehensive else "4-6"
     source_context = collect_source_context(repo_path, max_files=32, max_chars=90_000)
     prompt = (
         f"Create a DeepWiki-style wiki structure for repository {display_name}.\n"
@@ -253,7 +278,7 @@ def fallback_page_content(page: dict) -> str:
     )
 
 
-def generate_page_content_direct(repo_path: str, page: dict, model: str, language: str) -> str:
+def generate_page_content_direct(repo_path: str, page: dict, model: str, language: str, require_success: bool = False) -> str:
     source_context = collect_source_context(repo_path, page.get("filePaths", []), max_files=12, max_chars=45_000)
     file_list = "\n".join(f"- {path}" for path in page.get("filePaths", []))
     prompt = (
@@ -267,8 +292,14 @@ def generate_page_content_direct(repo_path: str, page: dict, model: str, languag
     )
     try:
         text = call_remote_model(prompt, model).strip()
-        return text or fallback_page_content(page)
+        if text:
+            return text
+        if require_success:
+            raise RuntimeError("remote model returned empty page")
+        return fallback_page_content(page)
     except Exception as exc:
+        if require_success:
+            raise RuntimeError(f"remote page generation failed for {page.get('id', 'page')}: {exc}") from exc
         print(f"[deepwiki] direct page fallback used for {page.get('id', 'page')}: {exc}", file=sys.stderr)
         return fallback_page_content(page)
 
@@ -378,7 +409,7 @@ def generate_structure(
     token: str,
     is_comprehensive: bool,
 ) -> dict:
-    page_count = "8-12" if is_comprehensive else "4-6"
+    page_count = "12-16" if is_comprehensive else "4-6"
     prompt = (
         f"Analyze this repository {display_name} and create a wiki structure for it.\n\n"
         f"Complete file tree:\n<file_tree>\n{file_tree}\n</file_tree>\n\n"
@@ -505,6 +536,7 @@ def main() -> int:
         print(f"[deepwiki] DeepWiki WebSocket generation unavailable; using direct remote model fallback: {exc}", file=sys.stderr)
         structure = generate_structure_direct(args.repo_path, display_name, file_tree, args.model, args.language, args.comprehensive)
         use_direct_pages = True
+    structure = ensure_minimum_pages(structure, file_tree, display_name, args.comprehensive)
     print(f"[deepwiki] generated {len(structure.get('pages', []))} pages")
 
     page_contents: dict[str, str] = {}
@@ -512,7 +544,7 @@ def main() -> int:
     for idx, page in enumerate(pages_list, start=1):
         print(f"[deepwiki] generating page {idx}/{len(pages_list)}")
         if use_direct_pages:
-            content = generate_page_content_direct(args.repo_path, page, args.model, args.language)
+            content = generate_page_content_direct(args.repo_path, page, args.model, args.language, require_success=args.comprehensive)
         else:
             content = generate_page_content(
                 ws_url,
@@ -525,7 +557,7 @@ def main() -> int:
                 args.token,
             )
             if not content.strip() or content.lstrip().startswith("Error:") or "No valid document embeddings" in content:
-                content = generate_page_content_direct(args.repo_path, page, args.model, args.language)
+                content = generate_page_content_direct(args.repo_path, page, args.model, args.language, require_success=args.comprehensive)
         page_contents[page["id"]] = content
 
     output_dir = Path(args.output_dir)
