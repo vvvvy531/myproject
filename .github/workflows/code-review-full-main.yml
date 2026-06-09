@@ -200,7 +200,7 @@ jobs:
           total="$(wc -l < "$REPORT_DIR/all-chunks.txt")"
           if (( next_index >= total )); then next_index=0; fi
           export NEXT_INDEX="$next_index" TOTAL="$total"
-          gh issue list -R "$SOURCE_REPO" --state open --search 'Automated Review in:title' --json title --limit 200 > /tmp/open-issues.json 2>/dev/null || echo '[]' > /tmp/open-issues.json
+          gh issue list -R "$SOURCE_REPO" --state open --search 'Automated Review in:title' --json title,state --limit 200 > /tmp/open-issues.json
           python3 - <<'PY'
           import os, json
           max_chunks = int(os.environ.get('MAX_CHUNKS_PER_RUN', '3'))
@@ -218,10 +218,18 @@ jobs:
               except json.JSONDecodeError:
                   open_issues = []
           blocked = set()
+          filtered_out = 0
           for iss in open_issues:
+              if iss.get('state', '') != 'open':
+                  filtered_out += 1
+                  continue
               t = iss.get('title', '')
               if t.startswith('Automated Review: '):
                   blocked.add(t[len('Automated Review: '):])
+          if filtered_out:
+              print(f'Filtered out {filtered_out} non-open issues from search results')
+          if blocked:
+              print(f'Blocked dirs: {sorted(blocked)}')
           selected = []
           end = next_index
           examined = 0
