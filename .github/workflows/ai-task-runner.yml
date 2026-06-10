@@ -19,7 +19,9 @@ concurrency:
 env:
   ARTIFACT_REPO: vvvvy531/myproject-linux-builds
   AI_CREDENTIALS_REF: cto-credentials
-  AI_CREDENTIALS_PATH: cto-auth/credentials
+  AI_CREDENTIALS_ROOT: cto-auth
+  AI_CREDENTIALS_MIN: "1"
+  AI_ROTATION_STATE_TITLE: AI Task Runner Credential Rotation State
   AI_MODEL: ${{ vars.AI_MODEL || vars.CTO_MODEL || 'gemini3_1_Pro_Preview' }}
   TASK_TYPE: ${{ github.event.client_payload.task_type || 'pr-review' }}
   TASK_GOAL: ${{ github.event.client_payload.task_goal || 'Review this pull request for correctness, security, performance, and maintainability issues.' }}
@@ -60,20 +62,66 @@ jobs:
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           test -x "$HOME/.local/bin/cto"
 
+      - name: Select credential
+        id: credential
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_TOKEN: ${{ secrets.LINUX_BUILDS_PAT }}
+        run: |
+          set -euo pipefail
+          min="${AI_CREDENTIALS_MIN:-1}"
+          case "$min" in ''|*[!0-9]*) min=1 ;; esac
+          max="$min"
+          if listing="$(GH_TOKEN="$ARTIFACT_TOKEN" gh api "repos/${ARTIFACT_REPO}/contents/${AI_CREDENTIALS_ROOT}?ref=${AI_CREDENTIALS_REF}" --jq '.[].name' 2>/dev/null)"; then
+            found="$(printf '%s\n' "$listing" | sed -n 's/^num\.\([0-9][0-9]*\)$/\1/p' | sort -n | tail -n 1 || true)"
+            if [[ -n "$found" ]]; then max="$found"; fi
+          fi
+          state_file=/tmp/ai-credential-rotation-state.md
+          title="$AI_ROTATION_STATE_TITLE"
+          issue="$(TITLE="$title" gh issue list -R "$GITHUB_REPOSITORY" --state all --search "$title in:title" --json number,title --jq '[.[] | select(.title == env.TITLE) | .number][0] // ""')"
+          if [[ -n "$issue" ]]; then
+            gh issue view "$issue" -R "$GITHUB_REPOSITORY" --json body --jq .body > "$state_file" || true
+          else
+            : > "$state_file"
+          fi
+          python3 - "$state_file" "$min" "$max" <<'PY' > /tmp/ai-credential.env
+          import json, pathlib, re, sys
+          path = pathlib.Path(sys.argv[1])
+          mn, mx = int(sys.argv[2]), int(sys.argv[3])
+          if mx < mn: mx = mn
+          body = path.read_text(encoding='utf-8', errors='replace') if path.exists() else ''
+          m = re.search(r'```json\s*(\{.*?\})\s*```', body, re.S)
+          state = json.loads(m.group(1)) if m else {}
+          n = int(state.get('next_account', mn) or mn)
+          if n < mn or n > mx: n = mn
+          nxt = mn if n >= mx else n + 1
+          print(f'ACCOUNT={n}')
+          print(f'NEXT_ACCOUNT={nxt}')
+          print(f'ACCOUNT_MIN={mn}')
+          print(f'ACCOUNT_MAX={mx}')
+          print(f'CREDENTIAL_PATH=cto-auth/num.{n}/credentials')
+          PY
+          cat /tmp/ai-credential.env
+          while IFS='=' read -r key val; do
+            [[ -n "$key" ]] && echo "${key,,}=$val" >> "$GITHUB_OUTPUT"
+          done < /tmp/ai-credential.env
+          rm -f /tmp/ai-credential.env "$state_file"
+
       - name: Restore credentials
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.LINUX_BUILDS_PAT }}
+          CREDENTIAL_PATH: ${{ steps.credential.outputs.credential_path }}
         run: |
           set -euo pipefail
           mkdir -p "$HOME/.cto"
           gh api -H 'Accept: application/vnd.github.raw' \
-            "repos/${ARTIFACT_REPO}/contents/${AI_CREDENTIALS_PATH}?ref=${AI_CREDENTIALS_REF}" \
+            "repos/${ARTIFACT_REPO}/contents/${CREDENTIAL_PATH}?ref=${AI_CREDENTIALS_REF}" \
             > "$HOME/.cto/credentials"
           chmod 600 "$HOME/.cto/credentials"
           test -s "$HOME/.cto/credentials"
           echo "credentials_sha=$(sha256sum "$HOME/.cto/credentials" | awk '{print $1}')" >> "$GITHUB_ENV"
-
       - name: Checkout target repository
         uses: actions/checkout@v4
         with:
@@ -280,31 +328,64 @@ jobs:
             -f state="$state" -f context="Automated AI Task Runner" \
             -f description="$description" -f target_url="$RUN_URL"
 
-      - name: Refresh credentials
+      - name: Refresh credentials and rotate
         if: always()
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.LINUX_BUILDS_PAT }}
+          PUBLIC_TOKEN: ${{ github.token }}
+          CREDENTIAL_PATH: ${{ steps.credential.outputs.credential_path }}
+          ACCOUNT: ${{ steps.credential.outputs.account }}
+          NEXT_ACCOUNT: ${{ steps.credential.outputs.next_account }}
+          ACCOUNT_MIN: ${{ steps.credential.outputs.account_min }}
+          ACCOUNT_MAX: ${{ steps.credential.outputs.account_max }}
         run: |
           set -euo pipefail
-          if [[ ! -s "$HOME/.cto/credentials" ]]; then
+          if [[ -s "$HOME/.cto/credentials" ]]; then
+            new_sha="$(sha256sum "$HOME/.cto/credentials" | awk '{print $1}')"
+            if [[ -z "${credentials_sha:-}" || "${credentials_sha}" != "${new_sha}" ]]; then
+              remote_sha="$(gh api "repos/${ARTIFACT_REPO}/contents/${CREDENTIAL_PATH}?ref=${AI_CREDENTIALS_REF}" --jq .sha 2>/dev/null || true)"
+              content="$(base64 -w 0 "$HOME/.cto/credentials")"
+              if [[ -n "$remote_sha" ]]; then
+                payload="$(jq -nc --arg message "chore: refresh ai runner credential num.${ACCOUNT}" --arg branch "${AI_CREDENTIALS_REF}" --arg sha "$remote_sha" --arg content "$content" '{message:$message,branch:$branch,sha:$sha,content:$content}')"
+              else
+                payload="$(jq -nc --arg message "chore: create ai runner credential num.${ACCOUNT}" --arg branch "${AI_CREDENTIALS_REF}" --arg content "$content" '{message:$message,branch:$branch,content:$content}')"
+              fi
+              tmp="$(mktemp)"
+              printf '%s' "$payload" > "$tmp"
+              gh api --method PUT "repos/${ARTIFACT_REPO}/contents/${CREDENTIAL_PATH}" --input "$tmp" --jq '.commit.sha'
+              rm -f "$tmp"
+            else
+              echo "Credentials unchanged"
+            fi
+          else
             echo "No credentials file found, skip refresh"
-            exit 0
           fi
-          new_sha="$(sha256sum "$HOME/.cto/credentials" | awk '{print $1}')"
-          if [[ -n "${credentials_sha:-}" && "${credentials_sha}" == "${new_sha}" ]]; then
-            echo "Credentials unchanged"
-            exit 0
+
+          export GH_TOKEN="$PUBLIC_TOKEN"
+          body_file=/tmp/ai-credential-rotation-state-body.md
+          title="$AI_ROTATION_STATE_TITLE"
+          {
+            echo '# AI Task Runner Credential Rotation State'
+            echo
+            echo 'Do not edit unless resetting AI credential rotation.'
+            echo
+            echo '```json'
+            jq -nc \
+              --argjson next_account "${NEXT_ACCOUNT:-1}" \
+              --argjson last_account "${ACCOUNT:-1}" \
+              --argjson account_min "${ACCOUNT_MIN:-1}" \
+              --argjson account_max "${ACCOUNT_MAX:-1}" \
+              --arg run_id "$GITHUB_RUN_ID" \
+              --arg updated_at "$(date -u +%FT%TZ)" \
+              '{next_account:$next_account,last_account:$last_account,account_min:$account_min,account_max:$account_max,run_id:$run_id,updated_at:$updated_at}'
+            echo '```'
+          } > "$body_file"
+          issue="$(TITLE="$title" gh issue list -R "$GITHUB_REPOSITORY" --state all --search "$title in:title" --json number,title --jq '[.[] | select(.title == env.TITLE) | .number][0] // ""')"
+          if [[ -z "$issue" ]]; then
+            gh issue create -R "$GITHUB_REPOSITORY" --title "$title" --body-file "$body_file" >/dev/null
+          else
+            gh issue edit "$issue" -R "$GITHUB_REPOSITORY" --body-file "$body_file"
+            gh issue reopen "$issue" -R "$GITHUB_REPOSITORY" || true
           fi
-          remote_sha="$(gh api "repos/${ARTIFACT_REPO}/contents/${AI_CREDENTIALS_PATH}?ref=${AI_CREDENTIALS_REF}" --jq .sha)"
-          content="$(base64 -w 0 "$HOME/.cto/credentials")"
-          payload="$(jq -nc \
-            --arg message "chore: refresh ai runner credentials" \
-            --arg branch "${AI_CREDENTIALS_REF}" \
-            --arg sha "$remote_sha" \
-            --arg content "$content" \
-            '{message:$message,branch:$branch,sha:$sha,content:$content}')"
-          tmp="$(mktemp)"
-          printf '%s' "$payload" > "$tmp"
-          gh api --method PUT "repos/${ARTIFACT_REPO}/contents/${AI_CREDENTIALS_PATH}" --input "$tmp" --jq '.commit.sha'
-          rm -f "$tmp"
+          rm -f "$body_file"
