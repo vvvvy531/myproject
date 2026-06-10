@@ -21,7 +21,7 @@ env:
   SCRIPTS_REF: main
   SOURCE_REPO: vvvvy531/myproject-godot
   ARTIFACT_REPO: vvvvy531/myproject-linux-builds
-  AUTH_CREDENTIAL_PATH: review-auth/num.1.tar.gz.enc
+  AUTH_CREDENTIAL_PATH: review-auth/num.1.tar.gz
   REPORT_DIR: ${{ github.workspace }}/full-review-report
   MAX_CHUNKS_PER_RUN: "3"
 
