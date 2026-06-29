@@ -104,83 +104,37 @@ jobs:
           import os
           from pathlib import Path
           root = Path('source')
+          native_root = root / 'native'
+          if not native_root.is_dir():
+              print('ERROR: native/ directory not found in source', file=__import__('sys').stderr)
+              exit(1)
           max_files_per_chunk = int(os.environ.get('MAX_FILES_PER_CHUNK', '120'))
-          code_suffixes = {'.h', '.hpp', '.hh', '.c', '.cc', '.cpp', '.cxx', '.cs', '.uproject', '.uplugin'}
-          excluded_names = {
-              '.git', '.github', '.vs', '.vscode',
-              'Binaries', 'Build', 'DerivedDataCache', 'Intermediate', 'Saved',
-              'node_modules', 'vendor', 'vendors', 'third_party', 'ThirdParty',
-              'External', 'Externals', 'Libraries', 'Library', 'SDK', 'SDKs',
-          }
-          import re as _re
+          code_suffixes = {'.h', '.hpp', '.hh', '.c', '.cc', '.cpp', '.cxx', '.cs', '.rs', '.gd', '.go', '.gdshader', '.gdshaderinc', '.shader', '.gdextension', '.tres', '.tscn', '.godot'}
+          excluded_names = {'graphify-out', '.git', '.github', '.vs', '.vscode', 'node_modules', 'Binaries', 'Build', 'Intermediate'}
           license_files = {'LICENSE', 'LICENSE.md', 'LICENSE.txt', 'LICENCE', 'LICENCE.md', 'COPYING', 'COPYING.md', 'NOTICE', 'NOTICE.md'}
-          def is_third_party_plugin(plugin_dir):
-              names = {f.name for f in plugin_dir.iterdir() if f.is_file()}
-              if names & license_files:
-                  return True
-              dirs = {f.name for f in plugin_dir.iterdir() if f.is_dir()}
-              if 'include' in dirs and 'lib' in dirs:
-                  return True
-              if 'CMakeLists.txt' in names:
-                  return True
-              if _re.search(r'[-_]\d+\.\d+', plugin_dir.name):
-                  return True
-              if 'README.md' in names and any(n.endswith('.uplugin') for n in names):
-                  return True
-              known = {'FlatBuffers', 'FastNoise2', 'WFC++', 'Flow', 'voronoi-0.9.0', 'usearch_windows_x64_2.22.0'}
-              if plugin_dir.name in known:
-                  return True
-              return False
           def count_code_files(p):
               return sum(1 for f in p.rglob('*') if f.is_file() and f.suffix in code_suffixes)
           chunks = []
-          # First pass: identify third-party plugin directories
-          excluded_plugin_names = set()
-          for d in sorted(root.rglob('Plugins')):
-              if d.is_dir() and not any(part in excluded_names for part in d.parts):
-                  for ps in sorted(d.iterdir()):
-                      if ps.is_dir() and is_third_party_plugin(ps):
-                          excluded_plugin_names.add(ps.name)
-          # Filter source_dirs to exclude third-party plugin Source dirs
-          def _under_excluded(path):
-              parts = list(path.parts)
-              for j, part in enumerate(parts):
-                  if part == 'Plugins' and j + 1 < len(parts):
-                      return parts[j+1] in excluded_plugin_names
-              return False
-          source_dirs = sorted([d for d in root.rglob('Source') if d.is_dir() and not any(part in excluded_names for part in d.parts) and not _under_excluded(d)])
-          plugins_source = []
-          for d in sorted(root.rglob('Plugins')):
-              if d.is_dir() and not any(part in excluded_names for part in d.parts):
-                  for ps in sorted(d.glob('*/Source')):
-                      if ps.is_dir() and ps.parent.name not in excluded_plugin_names:
-                          plugins_source.append(ps)
-          seen = set()
-          all_source = []
-          for d in source_dirs + [s for s in plugins_source if s.is_dir()]:
-              rp = str(d.resolve())
-              if rp not in seen:
-                  seen.add(rp)
-                  all_source.append(d)
-          for sd in all_source:
-              rel = str(sd.relative_to(root))
-              n = count_code_files(sd)
-              if n == 0: continue
+          for d in sorted(native_root.iterdir()):
+              if not d.is_dir() or d.name in excluded_names:
+                  continue
+              # Skip third-party libs that contain a LICENSE file
+              if any(f.name in license_files for f in d.iterdir() if f.is_file()):
+                  __import__('pathlib').Path('/tmp/third-party-excluded.txt').open('a').write(d.name + '\n')
+                  continue
+              n = count_code_files(d)
+              if n == 0:
+                  continue
               if n <= max_files_per_chunk:
-                  chunks.append(rel)
+                  chunks.append(str(d.relative_to(root)))
               else:
-                  subdirs = sorted([s for s in sd.iterdir() if s.is_dir() and s.name not in excluded_names])
+                  subdirs = sorted([s for s in d.iterdir() if s.is_dir() and s.name not in excluded_names])
                   if subdirs:
                       for sub in subdirs:
                           if count_code_files(sub) > 0:
                               chunks.append(str(sub.relative_to(root)))
                   else:
-                      chunks.append(rel)
-          if excluded_plugin_names:
-              __import__('pathlib').Path('/tmp/third-party-excluded.txt').open('w').write('\n'.join(sorted(excluded_plugin_names)) + '\n')
-          top_files = [str(f.relative_to(root)) for f in root.iterdir() if f.is_file() and f.suffix in code_suffixes]
-          if top_files:
-              chunks.append('(root-files)')
+                      chunks.append(str(d.relative_to(root)))
           for c in chunks:
               print(c)
           PY
