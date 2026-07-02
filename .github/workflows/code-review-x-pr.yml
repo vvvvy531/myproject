@@ -22,7 +22,7 @@ jobs:
   review:
     name: Automated PR Review
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     env:
       SOURCE_REPO: ${{ github.event.client_payload.source_repo }}
       PR_NUMBER: ${{ github.event.client_payload.pr_number }}
