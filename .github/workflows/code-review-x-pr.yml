@@ -82,8 +82,10 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           SCRIPTS_REF: ${{ env.SCRIPTS_REF }}
           REVIEW_FOCUS: |
-            Review this Unreal Engine private source pull request.
-            Focus only on high-confidence correctness bugs, Linux build safety, Unreal build issues, CI/CD, release artifacts, shell commands, secrets leakage, permissions, and supply-chain risks.
+            Review this pull request with focus on the specific programming languages and tools used in the changes.
+            Analyze code based on language-specific best practices (Rust, C++, C#, GDScript, or others as applicable).
+            Focus only on high-confidence correctness bugs, build safety, language-specific issues, CI/CD, release artifacts, shell commands, secrets leakage, permissions, and supply-chain risks.
+            Do not assume any specific game engine or framework unless explicitly present in the code.
             Do not suggest broad refactors or style-only changes.
         run: |
           set +x
