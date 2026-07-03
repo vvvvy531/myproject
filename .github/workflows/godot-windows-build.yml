@@ -13,19 +13,65 @@ on:
         default: godot-windows
 
 jobs:
-  dispatch-godot-build:
+  dispatch-and-wait:
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     permissions:
       contents: read
     steps:
-      - name: Dispatch Godot private build
+      - name: Dispatch and monitor Godot build
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
           SOURCE_REF: ${{ inputs.source_ref }}
           OUTPUT_REF: ${{ inputs.output_ref }}
         run: |
+          set -euo pipefail
+
+          # Snapshot existing run IDs before dispatch
+          before="$(gh run list --repo vvvvy531/myproject-godot \
+            --workflow godot-windows-build.yml --limit 20 \
+            --json databaseId --jq '.[].databaseId')"
+
+          # Dispatch build
           gh workflow run godot-windows-build.yml \
             --repo vvvvy531/myproject-godot \
             --ref "$SOURCE_REF" \
             -f source_ref="$SOURCE_REF" \
             -f output_ref="$OUTPUT_REF"
+
+          # Wait for new run to appear (retry up to 60s)
+          run_id=""
+          for _ in $(seq 1 20); do
+            sleep 3
+            run_id="$(gh run list --repo vvvvy531/myproject-godot \
+              --workflow godot-windows-build.yml --limit 20 \
+              --json databaseId --jq '.[].databaseId' \
+              | while read -r id; do
+                  echo "$before" | grep -qx "$id" || { echo "$id"; break; }
+                done)"
+            [ -n "$run_id" ] && break
+          done
+
+          [ -z "$run_id" ] && { echo "ERROR: could not find triggered run"; exit 1; }
+          echo "Triggered run_id=$run_id"
+
+          # Poll until completed (up to ~60min)
+          for i in $(seq 1 120); do
+            json="$(gh run view "$run_id" --repo vvvvy531/myproject-godot \
+              --json status,conclusion,url)"
+            status="$(echo "$json" | jq -r .status)"
+            conclusion="$(echo "$json" | jq -r .conclusion)"
+            echo "poll=$i status=$status conclusion=$conclusion"
+
+            if [ "$status" = "completed" ]; then
+              [ "$conclusion" = "success" ] && exit 0
+              echo "Build failed: $conclusion"
+              echo "$(echo "$json" | jq -r .url)"
+              exit 1
+            fi
+
+            sleep 30
+          done
+
+          echo "Build timed out"
+          exit 1
