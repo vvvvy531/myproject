@@ -79,13 +79,13 @@ jobs:
           match = re.search(r'```json\s*(\{.*?\})\s*```', body, re.S)
           state = json.loads(match.group(1)) if match else {}
           account = int(state.get('next_account', 2) or 2)
-          if account < 2 or account > 22:
+          if account < 2 or account > 42:
               account = 2
           usage = state.get('usage', {})
           selected = account
           selected_count = 0
           selected_window = now
-          for _ in list(range(2, 22)):
+          for _ in list(range(2, 43)):
               item = usage.get(str(selected), {})
               window = int(item.get('window_start', now) or now)
               count = int(item.get('count', 0) or 0)
