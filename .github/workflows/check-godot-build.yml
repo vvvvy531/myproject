@@ -42,7 +42,7 @@ jobs:
         run: |
           issue_num=$(gh issue list -R "${{ env.ISSUE_REPO }}" --search "in:title ${{ env.ISSUE_TITLE }}" --json number --jq '.[0].number' 2>/dev/null || echo "")
           if [[ -z "$issue_num" ]]; then
-            issue_num=$(gh issue create -R "${{ env.ISSUE_REPO }}" --title "${{ env.ISSUE_TITLE }}" --body "Automated Godot Windows compilation health check. Updated by CI." --label "build-health,automated" --json number --jq '.number')
+            issue_num=$(gh issue create -R "${{ env.ISSUE_REPO }}" --title "${{ env.ISSUE_TITLE }}" --body "Automated Godot Windows compilation health check." --label "build-health,automated" --json number --jq '.number')
           fi
           echo "issue_number=$issue_num" >> "$GITHUB_OUTPUT"
       - name: Update issue on failure
@@ -57,14 +57,12 @@ jobs:
 
 Version: ${VERSION}
 Time: $(date -u '+%Y-%m-%d %H:%M UTC')
-Workflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
-### Error Log
 \`\`\`
 ${log_tail}
 \`\`\`"
           gh issue reopen "$ISSUE_NUM" -R "${{ env.ISSUE_REPO }}" 2>/dev/null || true
-          gh issue edit "$ISSUE_NUM" -R "${{ env.ISSUE_REPO }}" --add-label "build-failure" --remove-label "build-passing" 2>/dev/null || true
+          gh issue edit "$ISSUE_NUM" -R "${{ env.ISSUE_REPO }}" --add-label build-failure --remove-label build-passing 2>/dev/null || true
       - name: Update issue on success
         if: steps.build.outcome == 'success'
         env:
@@ -76,7 +74,6 @@ ${log_tail}
 
 Version: ${VERSION}
 Time: $(date -u '+%Y-%m-%d %H:%M UTC')
-Workflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
 Windows editor build succeeded."
-          gh issue edit "$ISSUE_NUM" -R "${{ env.ISSUE_REPO }}" --add-label "build-passing" --remove-label "build-failure" 2>/dev/null || true
+          gh issue edit "$ISSUE_NUM" -R "${{ env.ISSUE_REPO }}" --add-label build-passing --remove-label build-failure 2>/dev/null || true
