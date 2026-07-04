@@ -15,65 +15,50 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
-      - name: Install build dependencies
+      - name: Install dependencies
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq scons pkg-config mingw-w64 libgl1-mesa-dev libglu1-mesa-dev jq
-      - name: Detect latest stable Godot
+      - name: Detect latest Godot
         id: version
         run: |
           latest=$(curl -sS https://api.github.com/repos/godotengine/godot/releases/latest | jq -r '.tag_name')
           echo "version=$latest" >> "$GITHUB_OUTPUT"
-          echo "Latest Godot: $latest"
       - name: Clone Godot
         run: |
           git clone --depth 1 --branch "${{ steps.version.outputs.version }}" https://github.com/godotengine/godot.git
-      - name: Attempt Windows build
+      - name: Build Windows editor
         id: build
         continue-on-error: true
         working-directory: godot
         run: |
           scons -j$(nproc) platform=windows target=editor arch=x86_64 use_mingw=yes use_llvm=no use_static_cpp=yes LINKFLAGS="-static-libgcc -static-libstdc++" progress=no 2>&1 | tee ../build.log
           exit ${PIPESTATUS[0]}
-      - name: Find or create tracking issue
+      - name: Find or create issue
         id: issue
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
         run: |
-          issue_num=$(gh issue list -R "${{ env.ISSUE_REPO }}" --search "in:title ${{ env.ISSUE_TITLE }}" --json number --jq '.[0].number' 2>/dev/null || echo "")
-          if [[ -z "$issue_num" ]]; then
-            issue_num=$(gh issue create -R "${{ env.ISSUE_REPO }}" --title "${{ env.ISSUE_TITLE }}" --body "Automated Godot Windows compilation health check." --label "build-health,automated" --json number --jq '.number')
+          num=$(gh issue list -R "${{ env.ISSUE_REPO }}" --search "in:title ${{ env.ISSUE_TITLE }}" --json number --jq '.[0].number' 2>/dev/null || echo "")
+          if [[ -z "$num" ]]; then
+            num=$(gh issue create -R "${{ env.ISSUE_REPO }}" --title "${{ env.ISSUE_TITLE }}" --body "Godot Windows build health check" --label "build-health" --json number --jq '.number')
           fi
-          echo "issue_number=$issue_num" >> "$GITHUB_OUTPUT"
-      - name: Update issue on failure
+          echo "issue_number=$num" >> "$GITHUB_OUTPUT"
+      - name: Report failure
         if: steps.build.outcome == 'failure'
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
-          ISSUE_NUM: ${{ steps.issue.outputs.issue_number }}
-          VERSION: ${{ steps.version.outputs.version }}
+          NUM: ${{ steps.issue.outputs.issue_number }}
+          VER: ${{ steps.version.outputs.version }}
         run: |
-          log_tail=$(tail -150 build.log | sed 's/```/｀｀｀/g')
-          gh issue comment "$ISSUE_NUM" -R "${{ env.ISSUE_REPO }}" --body "## Build Failed
-
-Version: ${VERSION}
-Time: $(date -u '+%Y-%m-%d %H:%M UTC')
-
-\`\`\`
-${log_tail}
-\`\`\`"
-          gh issue reopen "$ISSUE_NUM" -R "${{ env.ISSUE_REPO }}" 2>/dev/null || true
-          gh issue edit "$ISSUE_NUM" -R "${{ env.ISSUE_REPO }}" --add-label build-failure --remove-label build-passing 2>/dev/null || true
-      - name: Update issue on success
+          log=$(tail -100 build.log)
+          gh issue comment "$NUM" -R "${{ env.ISSUE_REPO }}" --body "Build failed: $VER at $(date -u '+%Y-%m-%d %H:%M UTC')"
+          gh issue reopen "$NUM" -R "${{ env.ISSUE_REPO }}" 2>/dev/null || true
+      - name: Report success
         if: steps.build.outcome == 'success'
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
-          ISSUE_NUM: ${{ steps.issue.outputs.issue_number }}
-          VERSION: ${{ steps.version.outputs.version }}
+          NUM: ${{ steps.issue.outputs.issue_number }}
+          VER: ${{ steps.version.outputs.version }}
         run: |
-          gh issue comment "$ISSUE_NUM" -R "${{ env.ISSUE_REPO }}" --body "## Build Passing
-
-Version: ${VERSION}
-Time: $(date -u '+%Y-%m-%d %H:%M UTC')
-
-Windows editor build succeeded."
-          gh issue edit "$ISSUE_NUM" -R "${{ env.ISSUE_REPO }}" --add-label build-passing --remove-label build-failure 2>/dev/null || true
+          gh issue comment "$NUM" -R "${{ env.ISSUE_REPO }}" --body "Build passing: $VER at $(date -u '+%Y-%m-%d %H:%M UTC')"
