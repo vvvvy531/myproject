@@ -1,7 +1,7 @@
 name: Godot Windows Build Health Check
 
 on:
-  workflow_dispatch:
+  workflow_dispatch: {}
   schedule:
     - cron: "0 2 * * 1,4"
 
@@ -82,11 +82,11 @@ jobs:
         run: |
           log_tail=$(tail -150 build.log | sed 's/```/｀｀｀/g')
           
-          gh issue comment "$ISSUE_NUM" -R "${{ env.ISSUE_REPO }}" --body "## ❌ Build Failed
+          gh issue comment "$ISSUE_NUM" -R "${{ env.ISSUE_REPO }}" --body "## Build Failed
 
-**Version**: ${VERSION}  
-**Time**: $(date -u '+%Y-%m-%d %H:%M UTC')  
-**Workflow**: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+Version: ${VERSION}
+Time: $(date -u '+%Y-%m-%d %H:%M UTC')
+Workflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
 ### Error Log (last 150 lines)
 \`\`\`
@@ -105,11 +105,11 @@ ${log_tail}
           ISSUE_NUM: ${{ steps.issue.outputs.issue_number }}
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          gh issue comment "$ISSUE_NUM" -R "${{ env.ISSUE_REPO }}" --body "## ✅ Build Passing
+          gh issue comment "$ISSUE_NUM" -R "${{ env.ISSUE_REPO }}" --body "## Build Passing
 
-**Version**: ${VERSION}  
-**Time**: $(date -u '+%Y-%m-%d %H:%M UTC')  
-**Workflow**: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+Version: ${VERSION}
+Time: $(date -u '+%Y-%m-%d %H:%M UTC')
+Workflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
 Windows editor build succeeded."
           
