@@ -93,7 +93,7 @@ jobs:
                   window = now; count = 0
               if count < 3:
                   selected_count = count; selected_window = window; break
-              selected = 2 if selected == 22 else selected + 1
+              selected = 2 if selected == 42 else selected + 1
           else:
               print('No account quota available', file=sys.stderr); sys.exit(1)
           print(f'ACCOUNT={selected}')
