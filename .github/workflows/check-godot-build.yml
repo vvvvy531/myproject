@@ -19,18 +19,15 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq scons pkg-config mingw-w64 libgl1-mesa-dev libglu1-mesa-dev jq
-
       - name: Detect latest stable Godot
         id: version
         run: |
           latest=$(curl -sS https://api.github.com/repos/godotengine/godot/releases/latest | jq -r '.tag_name')
           echo "version=$latest" >> "$GITHUB_OUTPUT"
           echo "Latest Godot: $latest"
-
       - name: Clone Godot
         run: |
           git clone --depth 1 --branch "${{ steps.version.outputs.version }}" https://github.com/godotengine/godot.git
-
       - name: Attempt Windows build
         id: build
         continue-on-error: true
@@ -38,7 +35,6 @@ jobs:
         run: |
           scons -j$(nproc) platform=windows target=editor arch=x86_64 use_mingw=yes use_llvm=no use_static_cpp=yes LINKFLAGS="-static-libgcc -static-libstdc++" progress=no 2>&1 | tee ../build.log
           exit ${PIPESTATUS[0]}
-
       - name: Find or create tracking issue
         id: issue
         env:
@@ -49,7 +45,6 @@ jobs:
             issue_num=$(gh issue create -R "${{ env.ISSUE_REPO }}" --title "${{ env.ISSUE_TITLE }}" --body "Automated Godot Windows compilation health check. Updated by CI." --label "build-health,automated" --json number --jq '.number')
           fi
           echo "issue_number=$issue_num" >> "$GITHUB_OUTPUT"
-
       - name: Update issue on failure
         if: steps.build.outcome == 'failure'
         env:
@@ -70,7 +65,6 @@ ${log_tail}
 \`\`\`"
           gh issue reopen "$ISSUE_NUM" -R "${{ env.ISSUE_REPO }}" 2>/dev/null || true
           gh issue edit "$ISSUE_NUM" -R "${{ env.ISSUE_REPO }}" --add-label "build-failure" --remove-label "build-passing" 2>/dev/null || true
-
       - name: Update issue on success
         if: steps.build.outcome == 'success'
         env:
