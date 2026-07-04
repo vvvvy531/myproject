@@ -1,57 +1,43 @@
-name: Godot Windows Build
+name: Godot Windows Build Health Check
 
 on:
   workflow_dispatch:
-    inputs:
-      godot_version:
-        description: Godot tag or branch (e.g. 4.3-stable, 4.4-stable)
-        required: true
-        default: 4.3-stable
-      build_targets:
-        description: Build targets (editor, templates, or both)
-        required: true
-        default: both
-        type: choice
-        options:
-          - editor
-          - templates
-          - both
+  schedule:
+    - cron: "0 2 * * 1,4"  # Monday and Thursday at 2 AM UTC
 
 env:
-  ARTIFACT_REPO: vvvvy531/myproject-linux-builds
-  SCONS_CACHE: ${{ github.workspace }}/.scons-cache
+  ISSUE_REPO: vvvvy531/myproject-source
+  ISSUE_TITLE: "🔨 Godot Windows Build Health"
 
 jobs:
-  build:
-    name: Godot Windows ${{ inputs.godot_version }}
+  check:
+    name: Check latest Godot Windows build
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 90
     steps:
       - name: Install build dependencies
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq \
             scons pkg-config mingw-w64 \
-            libgl1-mesa-dev libglu1-mesa-dev \
-            p7zip-full
+            libgl1-mesa-dev libglu1-mesa-dev jq
 
-      - name: Setup scons cache
-        uses: actions/cache@v4
-        with:
-          path: ${{ env.SCONS_CACHE }}
-          key: godot-windows-${{ inputs.godot_version }}-${{ github.run_id }}
-          restore-keys: |
-            godot-windows-${{ inputs.godot_version }}-
-
-      - name: Clone Godot engine
+      - name: Detect latest stable Godot
+        id: version
         run: |
-          git clone https://github.com/godotengine/godot.git \
-            --branch "${{ inputs.godot_version }}" \
-            --depth 1 \
-            --single-branch
+          latest=$(curl -sS https://api.github.com/repos/godotengine/godot/releases/latest \
+            | jq -r '.tag_name')
+          echo "version=$latest" >> "$GITHUB_OUTPUT"
+          echo "Latest Godot: $latest"
 
-      - name: Build editor
-        if: inputs.build_targets == 'editor' || inputs.build_targets == 'both'
+      - name: Clone Godot
+        run: |
+          git clone --depth 1 --branch "${{ steps.version.outputs.version }}" \
+            https://github.com/godotengine/godot.git
+
+      - name: Attempt Windows build
+        id: build
+        continue-on-error: true
         working-directory: godot
         run: |
           scons -j$(nproc) \
@@ -62,87 +48,71 @@ jobs:
             use_llvm=no \
             use_static_cpp=yes \
             LINKFLAGS="-static-libgcc -static-libstdc++" \
-            progress=no
+            progress=no \
+            2>&1 | tee ../build.log
+          exit ${PIPESTATUS[0]}
 
-      - name: Build template (debug)
-        if: inputs.build_targets == 'templates' || inputs.build_targets == 'both'
-        working-directory: godot
-        run: |
-          scons -j$(nproc) \
-            platform=windows \
-            target=template_debug \
-            arch=x86_64 \
-            use_mingw=yes \
-            use_llvm=no \
-            use_static_cpp=yes \
-            LINKFLAGS="-static-libgcc -static-libstdc++" \
-            progress=no
-
-      - name: Build template (release)
-        if: inputs.build_targets == 'templates' || inputs.build_targets == 'both'
-        working-directory: godot
-        run: |
-          scons -j$(nproc) \
-            platform=windows \
-            target=template_release \
-            arch=x86_64 \
-            use_mingw=yes \
-            use_llvm=no \
-            use_static_cpp=yes \
-            LINKFLAGS="-static-libgcc -static-libstdc++" \
-            production=yes \
-            progress=no
-
-      - name: Strip binaries
-        working-directory: godot/bin
-        run: |
-          x86_64-w64-mingw32-strip *.exe 2>/dev/null || true
-
-      - name: Package builds
-        working-directory: godot
-        run: |
-          mkdir -p dist
-          ver="${{ inputs.godot_version }}"
-          if [[ -f "bin/godot.windows.editor.x86_64.exe" ]]; then
-            cp "bin/godot.windows.editor.x86_64.exe" "dist/Godot_v${ver}_win64_editor.exe"
-          fi
-          if [[ -f "bin/godot.windows.template_debug.x86_64.exe" ]]; then
-            cp "bin/godot.windows.template_debug.x86_64.exe" "dist/windows_debug.exe"
-          fi
-          if [[ -f "bin/godot.windows.template_release.x86_64.exe" ]]; then
-            cp "bin/godot.windows.template_release.x86_64.exe" "dist/windows_release.exe"
-          fi
-          cd dist
-          7z a "../Godot_v${ver}_win64.zip" .
-
-      - name: Upload to artifact repo
-        working-directory: godot
+      - name: Find or create tracking issue
+        id: issue
         env:
-          GH_TOKEN: ${{ secrets.LINUX_BUILDS_PAT }}
+          GH_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
         run: |
-          set -euo pipefail
-          ver="${{ inputs.godot_version }}"
-          tag="godot-windows-${ver}-${{ github.run_number }}"
+          issue_num=$(gh issue list -R "${{ env.ISSUE_REPO }}" \
+            --search "in:title ${{ env.ISSUE_TITLE }}" \
+            --json number --jq '.[0].number' 2>/dev/null || echo "")
           
-          if ! gh release view "$tag" -R "${{ env.ARTIFACT_REPO }}" >/dev/null 2>&1; then
-            gh release create "$tag" -R "${{ env.ARTIFACT_REPO }}" \
-              --title "Godot Windows ${ver} #${{ github.run_number }}" \
-              --notes "Built from ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
-              --latest=false
+          if [[ -z "$issue_num" ]]; then
+            echo "Creating new tracking issue..."
+            issue_num=$(gh issue create -R "${{ env.ISSUE_REPO }}" \
+              --title "${{ env.ISSUE_TITLE }}" \
+              --body "Automated Godot Windows compilation health check. Updated by CI." \
+              --label "build-health,automated" \
+              --json number --jq '.number')
           fi
           
-          gh release upload "$tag" -R "${{ env.ARTIFACT_REPO }}" \
-            "Godot_v${ver}_win64.zip" --clobber
+          echo "issue_number=$issue_num" >> "$GITHUB_OUTPUT"
+          echo "Tracking issue: #$issue_num"
 
-      - name: Cleanup old releases
-        if: always()
+      - name: Update issue on failure
+        if: steps.build.outcome == 'failure'
         env:
-          GH_TOKEN: ${{ secrets.LINUX_BUILDS_PAT }}
+          GH_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
+          ISSUE_NUM: ${{ steps.issue.outputs.issue_number }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          releases=$(gh release list -R "${{ env.ARTIFACT_REPO }}" \
-            --limit 50 --json tagName,createdAt \
-            --jq '.[] | select(.tagName | startswith("godot-windows-")) | .tagName' \
-            | tail -n +6)
-          for tag in $releases; do
-            gh release delete "$tag" -R "${{ env.ARTIFACT_REPO }}" --cleanup-tag --yes || true
-          done
+          log_tail=$(tail -150 build.log | sed 's/```/｀｀｀/g')
+          
+          gh issue comment "$ISSUE_NUM" -R "${{ env.ISSUE_REPO }}" --body "## ❌ Build Failed
+
+**Version**: ${VERSION}  
+**Time**: $(date -u '+%Y-%m-%d %H:%M UTC')  
+**Workflow**: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+### Error Log (last 150 lines)
+\`\`\`
+${log_tail}
+\`\`\`"
+          
+          gh issue reopen "$ISSUE_NUM" -R "${{ env.ISSUE_REPO }}" 2>/dev/null || true
+          gh issue edit "$ISSUE_NUM" -R "${{ env.ISSUE_REPO }}" \
+            --add-label "build-failure" \
+            --remove-label "build-passing" 2>/dev/null || true
+
+      - name: Update issue on success
+        if: steps.build.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
+          ISSUE_NUM: ${{ steps.issue.outputs.issue_number }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          gh issue comment "$ISSUE_NUM" -R "${{ env.ISSUE_REPO }}" --body "## ✅ Build Passing
+
+**Version**: ${VERSION}  
+**Time**: $(date -u '+%Y-%m-%d %H:%M UTC')  
+**Workflow**: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+Windows editor build succeeded."
+          
+          gh issue edit "$ISSUE_NUM" -R "${{ env.ISSUE_REPO }}" \
+            --add-label "build-passing" \
+            --remove-label "build-failure" 2>/dev/null || true
