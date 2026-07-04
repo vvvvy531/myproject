@@ -3,11 +3,11 @@ name: Godot Windows Build Health Check
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 2 * * 1,4"  # Monday and Thursday at 2 AM UTC
+    - cron: "0 2 * * 1,4"
 
 env:
   ISSUE_REPO: vvvvy531/myproject-source
-  ISSUE_TITLE: "🔨 Godot Windows Build Health"
+  ISSUE_TITLE: Godot Windows Build Health
 
 jobs:
   check:
