@@ -3,75 +3,146 @@ name: Godot Windows Build
 on:
   workflow_dispatch:
     inputs:
-      source_ref:
-        description: Godot private repo branch/tag/SHA to build
+      godot_version:
+        description: Godot tag or branch (e.g. 4.3-stable, 4.4-stable)
         required: true
-        default: main
-      output_ref:
-        description: Build artifact branch in myproject-linux-builds
+        default: 4.3-stable
+      build_targets:
+        description: Build targets (editor, templates, or both)
         required: true
-        default: godot-windows
+        default: both
+        type: choice
+        options:
+          - editor
+          - templates
+          - both
+
+env:
+  ARTIFACT_REPO: vvvvy531/myproject-linux-builds
+  SCONS_CACHE: ${{ github.workspace }}/.scons-cache
 
 jobs:
-  dispatch-and-wait:
+  build:
+    name: Godot Windows ${{ inputs.godot_version }}
     runs-on: ubuntu-latest
-    timeout-minutes: 90
-    permissions:
-      contents: read
+    timeout-minutes: 120
     steps:
-      - name: Dispatch and monitor Godot build
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            scons pkg-config mingw-w64 \
+            libgl1-mesa-dev libglu1-mesa-dev \
+            p7zip-full
+
+      - name: Setup scons cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.SCONS_CACHE }}
+          key: godot-windows-${{ inputs.godot_version }}-${{ github.run_id }}
+          restore-keys: |
+            godot-windows-${{ inputs.godot_version }}-
+
+      - name: Clone Godot engine
+        run: |
+          git clone https://github.com/godotengine/godot.git \
+            --branch "${{ inputs.godot_version }}" \
+            --depth 1 \
+            --single-branch
+
+      - name: Build editor
+        if: inputs.build_targets == 'editor' || inputs.build_targets == 'both'
+        working-directory: godot
+        run: |
+          scons -j$(nproc) \
+            platform=windows \
+            target=editor \
+            arch=x86_64 \
+            use_mingw=yes \
+            use_llvm=no \
+            use_static_cpp=yes \
+            LINKFLAGS="-static-libgcc -static-libstdc++" \
+            progress=no
+
+      - name: Build template (debug)
+        if: inputs.build_targets == 'templates' || inputs.build_targets == 'both'
+        working-directory: godot
+        run: |
+          scons -j$(nproc) \
+            platform=windows \
+            target=template_debug \
+            arch=x86_64 \
+            use_mingw=yes \
+            use_llvm=no \
+            use_static_cpp=yes \
+            LINKFLAGS="-static-libgcc -static-libstdc++" \
+            progress=no
+
+      - name: Build template (release)
+        if: inputs.build_targets == 'templates' || inputs.build_targets == 'both'
+        working-directory: godot
+        run: |
+          scons -j$(nproc) \
+            platform=windows \
+            target=template_release \
+            arch=x86_64 \
+            use_mingw=yes \
+            use_llvm=no \
+            use_static_cpp=yes \
+            LINKFLAGS="-static-libgcc -static-libstdc++" \
+            production=yes \
+            progress=no
+
+      - name: Strip binaries
+        working-directory: godot/bin
+        run: |
+          x86_64-w64-mingw32-strip *.exe 2>/dev/null || true
+
+      - name: Package builds
+        working-directory: godot
+        run: |
+          mkdir -p dist
+          ver="${{ inputs.godot_version }}"
+          if [[ -f "bin/godot.windows.editor.x86_64.exe" ]]; then
+            cp "bin/godot.windows.editor.x86_64.exe" "dist/Godot_v${ver}_win64_editor.exe"
+          fi
+          if [[ -f "bin/godot.windows.template_debug.x86_64.exe" ]]; then
+            cp "bin/godot.windows.template_debug.x86_64.exe" "dist/windows_debug.exe"
+          fi
+          if [[ -f "bin/godot.windows.template_release.x86_64.exe" ]]; then
+            cp "bin/godot.windows.template_release.x86_64.exe" "dist/windows_release.exe"
+          fi
+          cd dist
+          7z a "../Godot_v${ver}_win64.zip" .
+
+      - name: Upload to artifact repo
+        working-directory: godot
         env:
-          GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
-          SOURCE_REF: ${{ inputs.source_ref }}
-          OUTPUT_REF: ${{ inputs.output_ref }}
+          GH_TOKEN: ${{ secrets.LINUX_BUILDS_PAT }}
         run: |
           set -euo pipefail
+          ver="${{ inputs.godot_version }}"
+          tag="godot-windows-${ver}-${{ github.run_number }}"
+          
+          if ! gh release view "$tag" -R "${{ env.ARTIFACT_REPO }}" >/dev/null 2>&1; then
+            gh release create "$tag" -R "${{ env.ARTIFACT_REPO }}" \
+              --title "Godot Windows ${ver} #${{ github.run_number }}" \
+              --notes "Built from ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+              --latest=false
+          fi
+          
+          gh release upload "$tag" -R "${{ env.ARTIFACT_REPO }}" \
+            "Godot_v${ver}_win64.zip" --clobber
 
-          # Snapshot existing run IDs before dispatch
-          before="$(gh run list --repo vvvvy531/myproject-godot \
-            --workflow godot-windows-build.yml --limit 20 \
-            --json databaseId --jq '.[].databaseId')"
-
-          # Dispatch build
-          gh workflow run godot-windows-build.yml \
-            --repo vvvvy531/myproject-godot \
-            --ref "$SOURCE_REF" \
-            -f source_ref="$SOURCE_REF" \
-            -f output_ref="$OUTPUT_REF"
-
-          # Wait for new run to appear (retry up to 60s)
-          run_id=""
-          for _ in $(seq 1 20); do
-            sleep 3
-            run_id="$(gh run list --repo vvvvy531/myproject-godot \
-              --workflow godot-windows-build.yml --limit 20 \
-              --json databaseId --jq '.[].databaseId' \
-              | while read -r id; do
-                  echo "$before" | grep -qx "$id" || { echo "$id"; break; }
-                done)"
-            [ -n "$run_id" ] && break
+      - name: Cleanup old releases
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.LINUX_BUILDS_PAT }}
+        run: |
+          releases=$(gh release list -R "${{ env.ARTIFACT_REPO }}" \
+            --limit 50 --json tagName,createdAt \
+            --jq '.[] | select(.tagName | startswith("godot-windows-")) | .tagName' \
+            | tail -n +6)
+          for tag in $releases; do
+            gh release delete "$tag" -R "${{ env.ARTIFACT_REPO }}" --cleanup-tag --yes || true
           done
-
-          [ -z "$run_id" ] && { echo "ERROR: could not find triggered run"; exit 1; }
-          echo "Triggered run_id=$run_id"
-
-          # Poll until completed (up to ~60min)
-          for i in $(seq 1 120); do
-            json="$(gh run view "$run_id" --repo vvvvy531/myproject-godot \
-              --json status,conclusion,url)"
-            status="$(echo "$json" | jq -r .status)"
-            conclusion="$(echo "$json" | jq -r .conclusion)"
-            echo "poll=$i status=$status conclusion=$conclusion"
-
-            if [ "$status" = "completed" ]; then
-              [ "$conclusion" = "success" ] && exit 0
-              echo "Build failed: $conclusion"
-              echo "$(echo "$json" | jq -r .url)"
-              exit 1
-            fi
-
-            sleep 30
-          done
-
-          echo "Build timed out"
-          exit 1
