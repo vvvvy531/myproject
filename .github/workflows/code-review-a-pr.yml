@@ -1,4 +1,4 @@
-name: Automated PR Review A
+﻿name: Automated PR Review A
 
 on:
   repository_dispatch:
@@ -79,13 +79,13 @@ jobs:
           match = re.search(r'```json\s*(\{.*?\})\s*```', body, re.S)
           state = json.loads(match.group(1)) if match else {}
           account = int(state.get('next_account', 2) or 2)
-          if account < 2 or account > 42:
+          if account < 2 or account > 22:
               account = 2
           usage = state.get('usage', {})
           selected = account
           selected_count = 0
           selected_window = now
-          for _ in list(range(2, 43)):
+          for _ in list(range(2, 23)):
               item = usage.get(str(selected), {})
               window = int(item.get('window_start', now) or now)
               count = int(item.get('count', 0) or 0)
@@ -93,7 +93,7 @@ jobs:
                   window = now; count = 0
               if count < 3:
                   selected_count = count; selected_window = window; break
-              selected = 2 if selected == 42 else selected + 1
+              selected = 2 if selected == 22 else selected + 1
           else:
               print('No account quota available', file=sys.stderr); sys.exit(1)
           print(f'ACCOUNT={selected}')
