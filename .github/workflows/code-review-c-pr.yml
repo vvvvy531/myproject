@@ -1,4 +1,4 @@
-name: Automated PR Review C
+﻿name: Automated PR Review C
 
 on:
   repository_dispatch:
@@ -58,7 +58,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.PRIVATE_SOURCE_PAT }}
           AI_KEY: ${{ secrets.REVIEW_PROXY_KEY }}
           AI_URL: ${{ secrets.REVIEW_PROXY_URL }}
-          AI_MODEL: ${{ secrets.REVIEW_MODEL || 'latest-sonnet' }}
+          AI_MODEL: ${{ secrets.REVIEW_MODEL || 'review' }}
           ARTIFACT_TOKEN: ${{ secrets.LINUX_BUILDS_PAT }}
           ARTIFACT_REPO: ${{ env.ARTIFACT_REPO }}
           SOURCE_REPO: ${{ env.SOURCE_REPO }}
