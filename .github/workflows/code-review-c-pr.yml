@@ -62,6 +62,15 @@ jobs:
           path: source
           persist-credentials: false
 
+      - name: Checkout review scripts
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.ARTIFACT_REPO }}
+          token: ${{ secrets.LINUX_BUILDS_PAT }}
+          ref: ${{ env.SCRIPTS_REF }}
+          path: review-scripts
+          persist-credentials: false
+
       - name: Execute AI review
         id: review
         working-directory: source
@@ -86,12 +95,8 @@ jobs:
         run: |
           set +x
           set +e
-          gh api -H 'Accept: application/vnd.github.raw' \
-            "repos/${ARTIFACT_REPO}/contents/ci-scripts/run-claude-review.sh?ref=${SCRIPTS_REF}" \
-            > /tmp/_run_claude_review.sh
-          bash /tmp/_run_claude_review.sh
+          bash ../review-scripts/ci-scripts/run-claude-review.sh
           status=$?
-          rm -f /tmp/_run_claude_review.sh
           echo "status=$status" >> "$GITHUB_OUTPUT"
           exit "$status"
 
@@ -119,8 +124,4 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.LINUX_BUILDS_PAT }}
         run: |
-          gh api -H 'Accept: application/vnd.github.raw' \
-            "repos/${ARTIFACT_REPO}/contents/ci-scripts/cleanup-review.sh?ref=${SCRIPTS_REF}" \
-            > /tmp/_cleanup.sh
-          bash /tmp/_cleanup.sh
-          rm -f /tmp/_cleanup.sh
+          [[ -f review-scripts/ci-scripts/cleanup-review.sh ]] && bash review-scripts/ci-scripts/cleanup-review.sh

@@ -106,6 +106,15 @@ jobs:
           done < /tmp/review-account.env
           rm -f /tmp/review-account.env "$state_file"
 
+      - name: Checkout review scripts
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          repository: ${{ env.ARTIFACT_REPO }}
+          token: ${{ secrets.LINUX_BUILDS_PAT }}
+          ref: ${{ env.SCRIPTS_REF }}
+          path: review-scripts
+          persist-credentials: false
+
       - name: Checkout private source
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
@@ -128,11 +137,7 @@ jobs:
           AUTH_PASSWORD: ${{ secrets.CODERABBIT_AUTH_PASSWORD }}
         run: |
           set -euo pipefail
-          gh api -H 'Accept: application/vnd.github.raw' \
-            "repos/${ARTIFACT_REPO}/contents/ci-scripts/setup-review.sh?ref=${SCRIPTS_REF}" \
-            > /tmp/_setup.sh
-          bash /tmp/_setup.sh
-          rm -f /tmp/_setup.sh
+          bash review-scripts/ci-scripts/setup-review.sh
 
       - name: Execute review
         id: review
@@ -150,12 +155,8 @@ jobs:
         run: |
           set +x
           set +e
-          gh api -H 'Accept: application/vnd.github.raw' \
-            "repos/${ARTIFACT_REPO}/contents/ci-scripts/run-review.sh?ref=${SCRIPTS_REF}" \
-            > /tmp/_run_review.sh
-          bash /tmp/_run_review.sh
+          bash ../review-scripts/ci-scripts/run-review.sh
           status=$?
-          rm -f /tmp/_run_review.sh
           echo "status=$status" >> "$GITHUB_OUTPUT"
           if [[ "$status" == "42" ]]; then
             echo "status=rate_limited" >> "$GITHUB_OUTPUT"
@@ -174,15 +175,11 @@ jobs:
           AUTH_PASSWORD: ${{ secrets.CODERABBIT_AUTH_PASSWORD }}
           GITHUB_TOKEN: ${{ github.token }}
           STATE_TITLE: ${{ env.ROTATION_STATE_TITLE }}
-          REVIEW_STATUS: ${{ steps.review.outputs.status }}
+          REVIEW_STATUS: ${{ steps.review.outputs.status || 'failed' }}
           WINDOW_START: ${{ steps.account.outputs.window_start }}
         run: |
           set -euo pipefail
-          gh api -H 'Accept: application/vnd.github.raw' \
-            "repos/${ARTIFACT_REPO}/contents/ci-scripts/sync-credential.sh?ref=${SCRIPTS_REF}" \
-            > /tmp/_sync.sh
-          bash /tmp/_sync.sh
-          rm -f /tmp/_sync.sh
+          bash review-scripts/ci-scripts/sync-credential.sh
 
       - name: Mark review result
         if: always() && env.HEAD_SHA != ''
@@ -214,8 +211,4 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.LINUX_BUILDS_PAT }}
         run: |
-          gh api -H 'Accept: application/vnd.github.raw' \
-            "repos/${ARTIFACT_REPO}/contents/ci-scripts/cleanup-review.sh?ref=${SCRIPTS_REF}" \
-            > /tmp/_cleanup.sh
-          bash /tmp/_cleanup.sh
-          rm -f /tmp/_cleanup.sh
+          [[ -f review-scripts/ci-scripts/cleanup-review.sh ]] && bash review-scripts/ci-scripts/cleanup-review.sh
